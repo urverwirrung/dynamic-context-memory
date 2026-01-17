@@ -100,14 +100,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=500,
-        help="Gradient steps per optimization run (default: 500)",
+        default=800,
+        help="Gradient steps per optimization run (default: 800)",
     )
     parser.add_argument(
         "--lr",
         type=float,
-        default=0.01,
-        help="Learning rate (default: 0.01)",
+        default=0.001,
+        help="Learning rate (default: 0.001)",
+    )
+    parser.add_argument(
+        "--num-reconstructions",
+        type=int,
+        default=5,
+        help="Number of reconstruction examples to log (default: 5)",
     )
     parser.add_argument(
         "--device",
@@ -149,6 +155,61 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=42,
         help="Random seed (default: 42)",
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.0,
+        help="Repetition penalty for decoding: >1.0 discourages repeats (default: 1.0, try 1.2)",
+    )
+    parser.add_argument(
+        "--no-repeat-ngram",
+        type=int,
+        default=0,
+        help="Block repeated n-grams of this size during decoding (default: 0 = disabled, try 2 or 3)",
+    )
+    # Priority 1: Scheduled Sampling
+    parser.add_argument(
+        "--scheduled-sampling",
+        action="store_true",
+        help="Enable scheduled sampling (gradually expose model to its own predictions during training)",
+    )
+    parser.add_argument(
+        "--ss-epsilon-start",
+        type=float,
+        default=1.0,
+        help="Scheduled sampling: initial epsilon (1.0 = pure teacher forcing) (default: 1.0)",
+    )
+    parser.add_argument(
+        "--ss-epsilon-end",
+        type=float,
+        default=0.2,
+        help="Scheduled sampling: final epsilon (0.0 = pure autoregressive) (default: 0.2)",
+    )
+    parser.add_argument(
+        "--ss-decay",
+        type=str,
+        default="inverse_sigmoid",
+        choices=["linear", "exponential", "inverse_sigmoid"],
+        help="Scheduled sampling decay schedule (default: inverse_sigmoid)",
+    )
+    parser.add_argument(
+        "--ss-decay-k",
+        type=float,
+        default=5.0,
+        help="Inverse sigmoid steepness: lower=faster decay (default: 5.0, try 3-10)",
+    )
+    # Priority 2: Unlikelihood Loss
+    parser.add_argument(
+        "--unlikelihood",
+        action="store_true",
+        help="Enable unlikelihood training (penalize repetition during training)",
+    )
+    parser.add_argument(
+        "--unlikelihood-alpha",
+        type=float,
+        default=0.5,
+        help="Unlikelihood loss weight (default: 0.5, range: 0.5-1.0)",
     )
     return parser.parse_args()
 
@@ -248,13 +309,10 @@ def compute_baselines(
     # Sample a subset for baseline computation
     sample_pairs = tokenized_pairs[:num_samples]
 
-    # Get model dtype
-    model_dtype = next(model.parameters()).dtype
-
     with torch.no_grad():
         for q_tokens, a_tokens in tqdm(sample_pairs, desc="Computing baselines"):
-            # Random embeddings baseline (match model dtype)
-            random_embeds = torch.randn(K, d, device=device, dtype=model_dtype) * 0.02
+            # Random embeddings baseline (float32, converted internally)
+            random_embeds = torch.randn(K, d, device=device, dtype=torch.float32) * 0.02
 
             loss_q = hf_generator_loss_fn(model, q_tokens, random_embeds)
             loss_a = hf_generator_loss_fn(model, a_tokens, random_embeds)
@@ -282,11 +340,13 @@ def compute_baselines(
 
 def run_stage1(
     model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
     tokenized_pairs: List[Tuple[torch.Tensor, torch.Tensor]],
+    pairs: List[Tuple[str, str]],
     config: OptimizationConfig,
     device: torch.device,
-    num_samples: int = 20,
-) -> Tuple[Dict, bool]:
+    num_reconstructions: int = 5,
+) -> Tuple[Dict, Dict]:
     """
     Stage 1: Single-target diagnostic.
 
@@ -294,30 +354,32 @@ def run_stage1(
     If this fails, joint optimization won't work either.
 
     Returns:
-        (results_dict, passed)
+        (summary_dict, detailed_results_dict)
     """
     logger.info("=" * 60)
     logger.info("STAGE 1: Single-Target Diagnostic")
     logger.info("=" * 60)
+    logger.info("Convergence criterion: exact token reconstruction")
 
     optimizer = SingleTargetOptimizer(
         generator=model,
         generator_loss_fn=hf_generator_loss_fn,
         config=config,
         device=device,
+        eos_token_id=tokenizer.eos_token_id,
     )
 
     # Test on Q targets
-    q_targets = [pair[0] for pair in tokenized_pairs[:num_samples]]
+    q_targets = [pair[0] for pair in tokenized_pairs]
     logger.info(f"\nOptimizing for Q targets ({len(q_targets)} samples)...")
     q_results = optimizer.run_diagnostic(q_targets)
 
     # Test on A targets
-    a_targets = [pair[1] for pair in tokenized_pairs[:num_samples]]
+    a_targets = [pair[1] for pair in tokenized_pairs]
     logger.info(f"\nOptimizing for A targets ({len(a_targets)} samples)...")
     a_results = optimizer.run_diagnostic(a_targets)
 
-    results = {
+    summary = {
         "q_convergence_rate": q_results["convergence_rate"],
         "q_mean_loss": q_results["mean_loss"],
         "a_convergence_rate": a_results["convergence_rate"],
@@ -325,12 +387,102 @@ def run_stage1(
         "combined_convergence_rate": (q_results["convergence_rate"] + a_results["convergence_rate"]) / 2,
     }
 
-    logger.info(f"\nStage 1 Results:")
-    logger.info(f"  Q convergence: {results['q_convergence_rate']:.1%} ({q_results['converged']}/{q_results['total']})")
-    logger.info(f"  A convergence: {results['a_convergence_rate']:.1%} ({a_results['converged']}/{a_results['total']})")
-    logger.info(f"  Combined: {results['combined_convergence_rate']:.1%}")
+    logger.info(f"\nStage 1 Results (reconstruction-based convergence):")
+    logger.info(f"  Q convergence: {summary['q_convergence_rate']:.1%} ({q_results['converged']}/{q_results['total']})")
+    logger.info(f"  A convergence: {summary['a_convergence_rate']:.1%} ({a_results['converged']}/{a_results['total']})")
+    logger.info(f"  Combined: {summary['combined_convergence_rate']:.1%}")
 
-    return results, results
+    # Build per-example detailed results
+    per_example_q = []
+    per_example_a = []
+
+    for i, r in enumerate(q_results["results"]):
+        q_text, _ = pairs[i]
+        generated_text = tokenizer.decode(r.generated_tokens, skip_special_tokens=True) if r.generated_tokens else ""
+        per_example_q.append({
+            "index": i,
+            "target_text": q_text,
+            "generated_text": generated_text,
+            "target_tokens": r.target_tokens,
+            "generated_tokens": r.generated_tokens,
+            "loss": r.loss,
+            "converged": r.converged,
+            "steps_to_converge": r.steps_to_converge,
+            "num_restarts_tried": r.num_restarts_tried,
+        })
+
+    for i, r in enumerate(a_results["results"]):
+        _, a_text = pairs[i]
+        generated_text = tokenizer.decode(r.generated_tokens, skip_special_tokens=True) if r.generated_tokens else ""
+        per_example_a.append({
+            "index": i,
+            "target_text": a_text,
+            "generated_text": generated_text,
+            "target_tokens": r.target_tokens,
+            "generated_tokens": r.generated_tokens,
+            "loss": r.loss,
+            "converged": r.converged,
+            "steps_to_converge": r.steps_to_converge,
+            "num_restarts_tried": r.num_restarts_tried,
+        })
+
+    # Log sample reconstructions (all examples, not just converged)
+    logger.info(f"\n--- Sample Reconstructions (Stage 1) ---")
+
+    reconstructions_q = []
+    reconstructions_a = []
+
+    # Q reconstructions - show first num_reconstructions examples
+    for idx in range(min(num_reconstructions, len(q_results["results"]))):
+        r = q_results["results"][idx]
+        q_text, _ = pairs[idx]
+        generated_text = tokenizer.decode(r.generated_tokens, skip_special_tokens=True) if r.generated_tokens else ""
+
+        status = "✓" if r.converged else "✗"
+        steps_info = f"steps={r.steps_to_converge}" if r.converged else "no convergence"
+        logger.info(f"  {status} Q[{idx}] loss={r.loss:.8f} ({steps_info})")
+        logger.info(f"    Target:    {q_text[:80]}{'...' if len(q_text) > 80 else ''}")
+        logger.info(f"    Generated: {generated_text[:80]}{'...' if len(generated_text) > 80 else ''}")
+
+        reconstructions_q.append({
+            "index": idx,
+            "target": q_text,
+            "generated": generated_text,
+            "loss": r.loss,
+            "converged": r.converged,
+            "steps_to_converge": r.steps_to_converge,
+        })
+
+    # A reconstructions
+    for idx in range(min(num_reconstructions, len(a_results["results"]))):
+        r = a_results["results"][idx]
+        _, a_text = pairs[idx]
+        generated_text = tokenizer.decode(r.generated_tokens, skip_special_tokens=True) if r.generated_tokens else ""
+
+        status = "✓" if r.converged else "✗"
+        steps_info = f"steps={r.steps_to_converge}" if r.converged else "no convergence"
+        logger.info(f"  {status} A[{idx}] loss={r.loss:.8f} ({steps_info})")
+        logger.info(f"    Target:    {a_text}")
+        logger.info(f"    Generated: {generated_text}")
+
+        reconstructions_a.append({
+            "index": idx,
+            "target": a_text,
+            "generated": generated_text,
+            "loss": r.loss,
+            "converged": r.converged,
+            "steps_to_converge": r.steps_to_converge,
+        })
+
+    detailed = {
+        "summary": summary,
+        "per_example_q": per_example_q,
+        "per_example_a": per_example_a,
+        "reconstructions_q": reconstructions_q,
+        "reconstructions_a": reconstructions_a,
+    }
+
+    return summary, detailed
 
 
 def stage1_passed(results: Dict, threshold: float) -> bool:
@@ -502,9 +654,10 @@ def greedy_decode(
         Decoded string
     """
     device = prompt_embeds.device
+    model_dtype = next(model.parameters()).dtype
 
-    # Start with just the prompt embeddings
-    current_embeds = prompt_embeds
+    # Convert to model dtype (embeddings may be float32 for optimization stability)
+    current_embeds = prompt_embeds.to(dtype=model_dtype)
 
     generated_ids = []
 
@@ -639,30 +792,51 @@ def main():
         num_restarts=args.num_restarts,
         num_steps=args.num_steps,
         lr=args.lr,
+        repetition_penalty=args.repetition_penalty,
+        no_repeat_ngram_size=args.no_repeat_ngram,
+        # Scheduled sampling (Priority 1)
+        use_scheduled_sampling=args.scheduled_sampling,
+        ss_initial_epsilon=args.ss_epsilon_start,
+        ss_final_epsilon=args.ss_epsilon_end,
+        ss_decay_type=args.ss_decay,
+        ss_decay_k=args.ss_decay_k,
+        # Unlikelihood (Priority 2)
+        use_unlikelihood=args.unlikelihood,
+        unlikelihood_alpha=args.unlikelihood_alpha,
     )
     logger.info(f"Optimization config: K={config.K}, steps={config.num_steps}, restarts={config.num_restarts}")
+    if args.repetition_penalty != 1.0 or args.no_repeat_ngram > 0:
+        logger.info(f"  Inference anti-repetition: penalty={args.repetition_penalty}, no_repeat_ngram={args.no_repeat_ngram}")
+    if args.scheduled_sampling:
+        logger.info(f"  Scheduled sampling: ε {args.ss_epsilon_start}→{args.ss_epsilon_end} ({args.ss_decay})")
+    if args.unlikelihood:
+        logger.info(f"  Unlikelihood training: α={args.unlikelihood_alpha}")
 
     # Compute baselines
     baselines = compute_baselines(model, tokenized_pairs, args.K, d, device)
 
     # Update loss threshold based on baselines
-    # Convergence = loss < 0.3 * random_baseline
-    config.loss_threshold = baselines["random_combined_mean"] * 0.3
-    logger.info(f"Dynamic loss threshold: {config.loss_threshold:.4f} (0.3x random baseline)")
+    # Convergence = loss < 0.01 * random_baseline (very conservative - we've seen 0.001 achieved)
+    config.loss_threshold = min(0.1, baselines["random_combined_mean"] * 0.01)
+    logger.info(f"Dynamic loss threshold: {config.loss_threshold:.4f} (min of 0.1 or 0.01x random baseline)")
 
     # Stage 1: Single-target diagnostic
-    stage1_results = None
+    stage1_summary = None
+    stage1_detailed = None
     if 1 in stages:
-        stage1_results, _ = run_stage1(model, tokenized_pairs, config, device)
+        stage1_summary, stage1_detailed = run_stage1(
+            model, tokenizer, tokenized_pairs, pairs, config, device,
+            num_reconstructions=args.num_reconstructions,
+        )
 
-        if not stage1_passed(stage1_results, args.stage1_threshold):
-            logger.warning(f"Stage 1 FAILED: convergence {stage1_results['combined_convergence_rate']:.1%} < {args.stage1_threshold:.1%}")
+        if not stage1_passed(stage1_summary, args.stage1_threshold):
+            logger.warning(f"Stage 1 FAILED: convergence {stage1_summary['combined_convergence_rate']:.1%} < {args.stage1_threshold:.1%}")
             logger.warning("Joint optimization unlikely to succeed. Consider:")
             logger.warning("  - Increasing K")
             logger.warning("  - Adjusting learning rate")
             logger.warning("  - Trying a different model")
         else:
-            logger.info(f"Stage 1 PASSED: convergence {stage1_results['combined_convergence_rate']:.1%}")
+            logger.info(f"Stage 1 PASSED: convergence {stage1_summary['combined_convergence_rate']:.1%}")
 
     # Stage 2: Joint Q-A optimization
     stage2_results = None
@@ -692,8 +866,8 @@ def main():
     logger.info(f"Examples: {args.num_examples}, K: {args.K}")
     logger.info(f"Stages run: {sorted(stages)}")
 
-    if stage1_results:
-        logger.info(f"Stage 1 convergence: {stage1_results['combined_convergence_rate']:.1%}")
+    if stage1_summary:
+        logger.info(f"Stage 1 convergence: {stage1_summary['combined_convergence_rate']:.1%}")
 
     if stage2_stats:
         logger.info(f"Stage 2 convergence: {stage2_stats['convergence_rate']:.1%}")
@@ -722,10 +896,18 @@ def main():
             "lr": args.lr,
             "d": d,
             "loss_threshold": config.loss_threshold,
+            "repetition_penalty": config.repetition_penalty,
+            "no_repeat_ngram_size": config.no_repeat_ngram_size,
+            "use_scheduled_sampling": config.use_scheduled_sampling,
+            "ss_initial_epsilon": config.ss_initial_epsilon,
+            "ss_final_epsilon": config.ss_final_epsilon,
+            "ss_decay_type": config.ss_decay_type,
+            "use_unlikelihood": config.use_unlikelihood,
+            "unlikelihood_alpha": config.unlikelihood_alpha,
             "stages_run": sorted(stages),
         },
         "baselines": baselines,
-        "stage1": stage1_results,
+        "stage1": stage1_detailed if stage1_detailed else stage1_summary,
         "stage2": stage2_stats,
         "stage2_per_example": [
             {
