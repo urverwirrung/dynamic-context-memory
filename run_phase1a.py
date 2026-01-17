@@ -50,7 +50,10 @@ from phase1a_optimization import (
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+# Force immediate output (no buffering)
+logging.getLogger().handlers[0].flush = lambda: sys.stdout.flush()
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +114,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="auto",
         help="Device: 'cuda', 'cpu', or 'auto' (default: auto)",
+    )
+    parser.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="GPU index to use (default: 0, the 5090). Set to -1 to use all GPUs.",
     )
     parser.add_argument(
         "--output-dir",
@@ -243,10 +252,13 @@ def compute_baselines(
     # Sample a subset for baseline computation
     sample_pairs = tokenized_pairs[:num_samples]
 
+    # Get model dtype
+    model_dtype = next(model.parameters()).dtype
+
     with torch.no_grad():
         for q_tokens, a_tokens in tqdm(sample_pairs, desc="Computing baselines"):
-            # Random embeddings baseline
-            random_embeds = torch.randn(K, d, device=device) * 0.02
+            # Random embeddings baseline (match model dtype)
+            random_embeds = torch.randn(K, d, device=device, dtype=model_dtype) * 0.02
 
             loss_q = hf_generator_loss_fn(model, q_tokens, random_embeds)
             loss_a = hf_generator_loss_fn(model, a_tokens, random_embeds)
@@ -556,16 +568,31 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Determine device_map based on --gpu flag
+    if device.type == "cuda":
+        if args.gpu >= 0:
+            device_map = {"": args.gpu}
+            logger.info(f"Using GPU {args.gpu} only")
+        else:
+            device_map = "auto"
+            logger.info("Using all available GPUs (device_map=auto)")
+    else:
+        device_map = None
+
     # Load model
     logger.info(f"Loading model: {args.model}")
+    logger.info("  (this may take a few minutes on first run - downloading weights)")
     try:
+        logger.info("  Loading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+        logger.info("  Tokenizer loaded. Loading model weights...")
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
             torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
-            device_map="auto" if device.type == "cuda" else None,
+            device_map=device_map,
             trust_remote_code=True,
         )
+        logger.info("  Model loaded successfully.")
     except Exception as e:
         logger.error(f"Failed to load {args.model}: {e}")
         logger.info("Trying fallback models...")
@@ -576,9 +603,10 @@ def main():
                 model = AutoModelForCausalLM.from_pretrained(
                     fallback,
                     torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
-                    device_map="auto" if device.type == "cuda" else None,
+                    device_map=device_map,
                     trust_remote_code=True,
                 )
+                logger.info(f"  Fallback model {fallback} loaded successfully.")
                 args.model = fallback
                 break
             except Exception:

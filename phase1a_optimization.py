@@ -86,10 +86,13 @@ class ContentOptimizer:
 
     def _initialize_content(self) -> torch.Tensor:
         """Initialize content embeddings with small random values."""
+        # Get model dtype for proper initialization
+        model_dtype = next(self.generator.parameters()).dtype
         content = torch.randn(
             self.config.K,
             self.config.d,
-            device=self.device
+            device=self.device,
+            dtype=model_dtype,
         ) * self.config.init_scale
         content.requires_grad_(True)
         return content
@@ -258,10 +261,13 @@ class SingleTargetOptimizer:
             param.requires_grad = False
 
     def _initialize_content(self) -> torch.Tensor:
+        # Get model dtype for proper initialization
+        model_dtype = next(self.generator.parameters()).dtype
         content = torch.randn(
             self.config.K,
             self.config.d,
-            device=self.device
+            device=self.device,
+            dtype=model_dtype,
         ) * self.config.init_scale
         content.requires_grad_(True)
         return content
@@ -269,6 +275,7 @@ class SingleTargetOptimizer:
     def _single_run(
         self,
         target_tokens: torch.Tensor,
+        verbose: bool = False,
     ) -> Tuple[torch.Tensor, float, List[float]]:
         content = self._initialize_content()
         optimizer = torch.optim.Adam([content], lr=self.config.lr)
@@ -283,7 +290,13 @@ class SingleTargetOptimizer:
         best_content = content.detach().clone()
         best_loss = float('inf')
 
-        for step in range(self.config.num_steps):
+        # Use tqdm for step progress if verbose
+        step_iter = range(self.config.num_steps)
+        if verbose:
+            from tqdm import tqdm
+            step_iter = tqdm(step_iter, desc="      steps", leave=False, ncols=80)
+
+        for step in step_iter:
             optimizer.zero_grad()
 
             loss = self.generator_loss_fn(self.generator, target_tokens, content)
@@ -304,14 +317,19 @@ class SingleTargetOptimizer:
                 best_loss = loss_val
                 best_content = content.detach().clone()
 
+            # Update tqdm postfix
+            if verbose and hasattr(step_iter, 'set_postfix'):
+                step_iter.set_postfix(loss=f"{loss_val:.3f}", best=f"{best_loss:.3f}")
+
         return best_content, best_loss, loss_history
 
-    def optimize(self, target_tokens: torch.Tensor) -> SingleTargetResult:
+    def optimize(self, target_tokens: torch.Tensor, verbose: bool = False) -> SingleTargetResult:
         """
         Find content embeddings that reconstruct a single target sequence.
 
         Args:
             target_tokens: Tokenized target, shape (seq_len,)
+            verbose: If True, log progress during optimization
 
         Returns:
             SingleTargetResult with optimized embeddings and diagnostics
@@ -320,15 +338,27 @@ class SingleTargetOptimizer:
         best_loss = float('inf')
         best_history = []
 
-        for restart in range(self.config.num_restarts):
-            content, loss, history = self._single_run(target_tokens)
+        # Use tqdm for restarts if verbose
+        restart_iter = range(self.config.num_restarts)
+        if verbose:
+            from tqdm import tqdm
+            restart_iter = tqdm(restart_iter, desc="    restarts", leave=False, ncols=80)
+
+        for restart in restart_iter:
+            # Only verbose logging on first restart to reduce noise
+            content, loss, history = self._single_run(target_tokens, verbose=(verbose and restart == 0))
 
             if loss < best_loss:
                 best_loss = loss
                 best_content = content
                 best_history = history
 
+                if verbose and hasattr(restart_iter, 'set_postfix'):
+                    restart_iter.set_postfix(best=f"{best_loss:.3f}")
+
                 if loss < self.config.loss_threshold * 0.5:
+                    if verbose:
+                        tqdm.write(f"      early exit: loss {loss:.4f} < threshold*0.5")
                     break
 
         return SingleTargetResult(
@@ -356,13 +386,16 @@ class SingleTargetOptimizer:
         Returns:
             Dict with convergence stats and per-target results
         """
+        from tqdm import tqdm
+
         results = []
-        for i, target in enumerate(targets):
-            result = self.optimize(target)
-            results.append(result)
+        for i, target in enumerate(tqdm(targets, desc="  targets", ncols=80)):
             name = names[i] if names else f"target_{i}"
+            # Verbose logging for first example only
+            result = self.optimize(target, verbose=(i == 0))
+            results.append(result)
             status = "✓" if result.converged else "✗"
-            logger.info(f"{status} {name}: loss={result.loss:.4f}")
+            tqdm.write(f"    {status} {name} (len={len(target)}): loss={result.loss:.4f}, restarts={result.num_restarts_tried}")
 
         converged = sum(1 for r in results if r.converged)
         losses = [r.loss for r in results]
@@ -441,8 +474,12 @@ def hf_generator_loss_fn(
     """
     device = prompt_embeds.device
 
-    # Get the embedding layer
+    # Get the embedding layer and its dtype
     embed_layer = model.get_input_embeddings()
+    model_dtype = next(model.parameters()).dtype
+
+    # Ensure prompt_embeds matches model dtype
+    prompt_embeds = prompt_embeds.to(dtype=model_dtype)
 
     # Embed target tokens
     target_embeds = embed_layer(target_tokens.to(device))  # (seq_len, d)
