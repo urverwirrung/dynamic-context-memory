@@ -234,9 +234,8 @@ def compute_baselines(
     """
     Compute baseline losses for calibrating success thresholds.
 
-    Baselines:
-    1. Random embeddings: L(target | random_embeds)
-    2. Full context: L(A | Q) with Q as actual token prompt
+    Baseline: L(target | random_embeds) - the "no information" baseline.
+    Convergence threshold is set relative to this.
 
     Returns:
         Dict with baseline statistics
@@ -245,9 +244,6 @@ def compute_baselines(
 
     random_losses_q = []
     random_losses_a = []
-    full_context_losses = []
-
-    embed_layer = model.get_input_embeddings()
 
     # Sample a subset for baseline computation
     sample_pairs = tokenized_pairs[:num_samples]
@@ -266,25 +262,16 @@ def compute_baselines(
             random_losses_q.append(loss_q.item())
             random_losses_a.append(loss_a.item())
 
-            # Full context baseline: L(A | Q)
-            # Use Q's token embeddings as prompt, predict A
-            q_embeds = embed_layer(q_tokens)  # (q_len, d)
-            loss_full = hf_generator_loss_fn(model, a_tokens, q_embeds)
-            full_context_losses.append(loss_full.item())
-
     baselines = {
         "random_q_mean": sum(random_losses_q) / len(random_losses_q),
         "random_a_mean": sum(random_losses_a) / len(random_losses_a),
         "random_combined_mean": (sum(random_losses_q) + sum(random_losses_a)) / (2 * len(random_losses_q)),
-        "full_context_mean": sum(full_context_losses) / len(full_context_losses),
-        "full_context_min": min(full_context_losses),
-        "full_context_max": max(full_context_losses),
     }
 
     logger.info(f"Baselines computed:")
     logger.info(f"  Random embeddings (Q): {baselines['random_q_mean']:.4f}")
     logger.info(f"  Random embeddings (A): {baselines['random_a_mean']:.4f}")
-    logger.info(f"  Full context L(A|Q): {baselines['full_context_mean']:.4f}")
+    logger.info(f"  Random combined: {baselines['random_combined_mean']:.4f}")
 
     return baselines
 
