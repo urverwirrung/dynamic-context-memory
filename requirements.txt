@@ -1,0 +1,15 @@
+# Phase 1a: Core Validation Experiment
+# Reference: docs/phase1a-experiment.md
+
+# Core dependencies
+torch>=2.0
+transformers>=4.40
+datasets>=2.14
+tqdm>=4.65
+
+# Optional: for flash attention (recommended for faster inference)
+# flash-attn>=2.0
+
+# Optional: for quantized models
+# bitsandbytes>=0.41
+# accelerate>=0.21
