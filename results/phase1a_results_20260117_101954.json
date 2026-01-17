@@ -1,0 +1,431 @@
+{
+  "config": {
+    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "num_examples": 100,
+    "K": 32,
+    "num_restarts": 5,
+    "num_steps": 500,
+    "lr": 0.001,
+    "d": 3584,
+    "loss_threshold": 0.1,
+    "stages_run": [
+      1
+    ]
+  },
+  "baselines": {
+    "random_q_mean": 11.272410202026368,
+    "random_a_mean": 12.396838569641114,
+    "random_combined_mean": 11.83462438583374
+  },
+  "stage1": {
+    "summary": {
+      "q_convergence_rate": 1.0,
+      "q_mean_loss": 0.0412985198199749,
+      "a_convergence_rate": 1.0,
+      "a_mean_loss": 0.031072325212880968,
+      "combined_convergence_rate": 1.0
+    },
+    "per_example_q": [
+      {
+        "index": 0,
+        "target_text": "Greater London is divided into what two groups of boroughs?",
+        "loss": 0.03669413924217224,
+        "converged": true,
+        "steps_to_best": 63,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Where is the Opera House located?",
+        "loss": 0.039417896419763565,
+        "converged": true,
+        "steps_to_best": 62,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "loss": 0.045150257647037506,
+        "converged": true,
+        "steps_to_best": 98,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 3,
+        "target_text": "Why did Henry VIII wish to execute his fifth wife?",
+        "loss": 0.04002736881375313,
+        "converged": true,
+        "steps_to_best": 81,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 4,
+        "target_text": "When would you have first found the moving coil microphone?",
+        "loss": 0.04361122101545334,
+        "converged": true,
+        "steps_to_best": 58,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 5,
+        "target_text": "How many East African and black people live in Israel?",
+        "loss": 0.048100970685482025,
+        "converged": true,
+        "steps_to_best": 42,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 6,
+        "target_text": "What has standardized character forms?",
+        "loss": 0.042501866817474365,
+        "converged": true,
+        "steps_to_best": 39,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 7,
+        "target_text": "What kind of organization is Friends of UNFPA?",
+        "loss": 0.034235626459121704,
+        "converged": true,
+        "steps_to_best": 51,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 8,
+        "target_text": "What does the Sanskrit term Karma translate as?",
+        "loss": 0.0481853224337101,
+        "converged": true,
+        "steps_to_best": 57,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 9,
+        "target_text": "In what way has the phrase been spread wide?",
+        "loss": 0.042185887694358826,
+        "converged": true,
+        "steps_to_best": 64,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 10,
+        "target_text": "Houuricanes and tropical stors can produce what across the coastal plain?",
+        "loss": 0.03277592733502388,
+        "converged": true,
+        "steps_to_best": 36,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 11,
+        "target_text": "In what city was a medical school located that was notably influenced by Islamic medicine?",
+        "loss": 0.043159425258636475,
+        "converged": true,
+        "steps_to_best": 46,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 12,
+        "target_text": "In what year was the Royal Dutch Shell Group created?",
+        "loss": 0.034374430775642395,
+        "converged": true,
+        "steps_to_best": 68,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 13,
+        "target_text": "Why were the first buildings narrow?",
+        "loss": 0.041455935686826706,
+        "converged": true,
+        "steps_to_best": 88,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 14,
+        "target_text": "What is Ana Cristina's ethnicity?",
+        "loss": 0.04549850896000862,
+        "converged": true,
+        "steps_to_best": 45,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 15,
+        "target_text": "How many underwriters was Richard M. Bowen III responsible for at Citigroup?",
+        "loss": 0.04388628154993057,
+        "converged": true,
+        "steps_to_best": 88,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 16,
+        "target_text": "In 1935, what race was a person required to be to become a United States citizen?",
+        "loss": 0.04116981849074364,
+        "converged": true,
+        "steps_to_best": 46,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 17,
+        "target_text": "What officer rotation doctrine was developed under Root's guidance?",
+        "loss": 0.04972478374838829,
+        "converged": true,
+        "steps_to_best": 30,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 18,
+        "target_text": "What element of the formalist definition makes it difficult to apply?",
+        "loss": 0.045818064361810684,
+        "converged": true,
+        "steps_to_best": 81,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 19,
+        "target_text": "Which insect manufactures it's own toxins?",
+        "loss": 0.027996663004159927,
+        "converged": true,
+        "steps_to_best": 20,
+        "num_restarts_tried": 1
+      }
+    ],
+    "per_example_a": [
+      {
+        "index": 0,
+        "target_text": "Inner London and Outer London",
+        "loss": 0.030755305662751198,
+        "converged": true,
+        "steps_to_best": 51,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Place Broglie",
+        "loss": 0.03021920472383499,
+        "converged": true,
+        "steps_to_best": 23,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "ATSC",
+        "loss": 0.00874645821750164,
+        "converged": true,
+        "steps_to_best": 22,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 3,
+        "target_text": "committing adultery",
+        "loss": 0.005480190739035606,
+        "converged": true,
+        "steps_to_best": 16,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 4,
+        "target_text": "around 1930",
+        "loss": 0.03973015025258064,
+        "converged": true,
+        "steps_to_best": 24,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 5,
+        "target_text": "About 150,000",
+        "loss": 0.033982664346694946,
+        "converged": true,
+        "steps_to_best": 23,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 6,
+        "target_text": "Chinese characters",
+        "loss": 0.03769943490624428,
+        "converged": true,
+        "steps_to_best": 29,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 7,
+        "target_text": "nonprofit",
+        "loss": 0.007292506285011768,
+        "converged": true,
+        "steps_to_best": 15,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 8,
+        "target_text": "action, work",
+        "loss": 0.03184060752391815,
+        "converged": true,
+        "steps_to_best": 21,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 9,
+        "target_text": "the phrase is now printed on newly issued Washington, D.C. license plates",
+        "loss": 0.04981024190783501,
+        "converged": true,
+        "steps_to_best": 96,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 10,
+        "target_text": "tornadoes",
+        "loss": 0.01787758059799671,
+        "converged": true,
+        "steps_to_best": 12,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 11,
+        "target_text": "Salerno",
+        "loss": 0.049641720950603485,
+        "converged": true,
+        "steps_to_best": 38,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 12,
+        "target_text": "1907",
+        "loss": 0.04452761635184288,
+        "converged": true,
+        "steps_to_best": 35,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 13,
+        "target_text": "to hold the roof",
+        "loss": 0.029659628868103027,
+        "converged": true,
+        "steps_to_best": 24,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 14,
+        "target_text": "Cuban American",
+        "loss": 0.02003696747124195,
+        "converged": true,
+        "steps_to_best": 27,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 15,
+        "target_text": "220",
+        "loss": 0.046635355800390244,
+        "converged": true,
+        "steps_to_best": 37,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 16,
+        "target_text": "white",
+        "loss": 0.024694334715604782,
+        "converged": true,
+        "steps_to_best": 6,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 17,
+        "target_text": "the principle of rotating officers from staff to line",
+        "loss": 0.04129638150334358,
+        "converged": true,
+        "steps_to_best": 142,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 18,
+        "target_text": "\"ordinary language\"",
+        "loss": 0.03282029554247856,
+        "converged": true,
+        "steps_to_best": 56,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 19,
+        "target_text": "Lepidoptera",
+        "loss": 0.038699857890605927,
+        "converged": true,
+        "steps_to_best": 88,
+        "num_restarts_tried": 1
+      }
+    ],
+    "reconstructions_q": [
+      {
+        "index": 0,
+        "target": "Greater London is divided into what two groups of boroughs?",
+        "generated": " is a London divided what of what London divided what of what divided what of what divided what of what divided what of what divided what of what divided what of what divided what of what divided what of what divided what of what divided what of what divided what",
+        "loss": 0.03669413924217224,
+        "steps_to_best": 63
+      },
+      {
+        "index": 1,
+        "target": "Where is the Opera House located?",
+        "generated": " is the is the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the the",
+        "loss": 0.039417896419763565,
+        "steps_to_best": 62
+      },
+      {
+        "index": 2,
+        "target": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated": " did did did did did did did did did did did did didididididididididididididididididididididididididididididididididididididid",
+        "loss": 0.045150257647037506,
+        "steps_to_best": 98
+      },
+      {
+        "index": 3,
+        "target": "Why did Henry VIII wish to execute his fifth wife?",
+        "generated": " did Henry wish execute? Why did he die? Why did he wish? Why did he die? Why did he wish? Why did he die? Why did he wish? Why did he die? Why did he wish? Why did he die?",
+        "loss": 0.04002736881375313,
+        "steps_to_best": 81
+      },
+      {
+        "index": 4,
+        "target": "When would you have first found the moving coil microphone?",
+        "generated": " would you would found moving microphone moving microphone moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone would found moving microphone",
+        "loss": 0.04361122101545334,
+        "steps_to_best": 58
+      }
+    ],
+    "reconstructions_a": [
+      {
+        "index": 0,
+        "target": "Inner London and Outer London",
+        "generated": " London and Paris are two of the most famous cities in Europe, each with their own unique characteristics.Inner London and outer London are different. Inner London",
+        "loss": 0.030755305662751198,
+        "steps_to_best": 51
+      },
+      {
+        "index": 1,
+        "target": "Place Broglie",
+        "generated": " Broieglieglieglieglieglieglieglieglieglieglieglieglieglieglie",
+        "loss": 0.03021920472383499,
+        "steps_to_best": 23
+      },
+      {
+        "index": 2,
+        "target": "ATSC",
+        "generated": "SCOM\nSCOMSCOMSCOMSCOMSCOMSCOMSCOMSCOMSCOMSCOMSCOMSCOMSCOMSC",
+        "loss": 0.00874645821750164,
+        "steps_to_best": 22
+      },
+      {
+        "index": 3,
+        "target": "committing adultery",
+        "generated": "tingcommit adultery\n\ncommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adulterycommit adultery",
+        "loss": 0.005480190739035606,
+        "steps_to_best": 16
+      },
+      {
+        "index": 4,
+        "target": "around 1930",
+        "generated": " 98571211 50000000 10000000 10",
+        "loss": 0.03973015025258064,
+        "steps_to_best": 24
+      }
+    ]
+  },
+  "stage2": null,
+  "stage2_per_example": null,
+  "spot_checks": null,
+  "timestamp": "20260117_101954"
+}

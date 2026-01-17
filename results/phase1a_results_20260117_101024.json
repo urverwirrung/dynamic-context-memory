@@ -1,0 +1,31 @@
+{
+  "config": {
+    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "num_examples": 100,
+    "K": 32,
+    "num_restarts": 5,
+    "num_steps": 500,
+    "lr": 0.001,
+    "d": 3584,
+    "loss_threshold": 0.1,
+    "stages_run": [
+      1
+    ]
+  },
+  "baselines": {
+    "random_q_mean": 11.272410202026368,
+    "random_a_mean": 12.396838569641114,
+    "random_combined_mean": 11.83462438583374
+  },
+  "stage1": {
+    "q_convergence_rate": 1.0,
+    "q_mean_loss": 0.0412985198199749,
+    "a_convergence_rate": 1.0,
+    "a_mean_loss": 0.031072325212880968,
+    "combined_convergence_rate": 1.0
+  },
+  "stage2": null,
+  "stage2_per_example": null,
+  "spot_checks": null,
+  "timestamp": "20260117_101024"
+}
