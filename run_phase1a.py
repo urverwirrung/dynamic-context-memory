@@ -3,13 +3,21 @@
 Phase 1a: Core Validation Experiment
 
 This script runs the core validation experiment for Dynamic Context Memory:
-- Stage 0: Load model and dataset, compute baselines
 - Stage 1: Single-target diagnostic (can we reconstruct Q alone? A alone?)
 - Stage 2: Joint Q-A optimization (the core experiment)
 - Stage 3: Spot check with greedy decoding
 
 Usage:
-    python run_phase1a.py [--model MODEL] [--num-examples N] [--K K] [--device DEVICE]
+    # Run only Stage 2 (default - the core experiment)
+    python run_phase1a.py
+
+    # Run specific stage(s)
+    python run_phase1a.py --stage 1        # Single-target diagnostic only
+    python run_phase1a.py --stage 2,3      # Joint optimization + spot check
+    python run_phase1a.py --stage 1,2,3    # All stages
+
+    # Run all stages (shorthand)
+    python run_phase1a.py --all
 
 Reference: docs/phase1a-experiment.md
 """
@@ -111,9 +119,15 @@ def parse_args() -> argparse.Namespace:
         help="Directory for output files (default: results)",
     )
     parser.add_argument(
-        "--skip-stage1",
+        "--stage",
+        type=str,
+        default="2",
+        help="Stage(s) to run: '1', '2', '3', or comma-separated like '1,2,3' (default: 2)",
+    )
+    parser.add_argument(
+        "--all",
         action="store_true",
-        help="Skip single-target diagnostic (Stage 1)",
+        help="Run all stages (equivalent to --stage 1,2,3)",
     )
     parser.add_argument(
         "--stage1-threshold",
@@ -128,6 +142,22 @@ def parse_args() -> argparse.Namespace:
         help="Random seed (default: 42)",
     )
     return parser.parse_args()
+
+
+def parse_stages(args: argparse.Namespace) -> set:
+    """Parse which stages to run from args."""
+    if args.all:
+        return {1, 2, 3}
+
+    stages = set()
+    for s in args.stage.split(","):
+        s = s.strip()
+        if s in ("1", "2", "3"):
+            stages.add(int(s))
+        else:
+            raise ValueError(f"Invalid stage: {s}. Must be 1, 2, or 3.")
+
+    return stages
 
 
 # -----------------------------------------------------------------------------
@@ -508,6 +538,9 @@ def greedy_decode(
 
 def main():
     args = parse_args()
+    stages = parse_stages(args)
+
+    logger.info(f"Running stages: {sorted(stages)}")
 
     # Set seed
     torch.manual_seed(args.seed)
@@ -604,7 +637,7 @@ def main():
 
     # Stage 1: Single-target diagnostic
     stage1_results = None
-    if not args.skip_stage1:
+    if 1 in stages:
         stage1_results, _ = run_stage1(model, tokenized_pairs, config, device)
 
         if not stage1_passed(stage1_results, args.stage1_threshold):
@@ -613,19 +646,28 @@ def main():
             logger.warning("  - Increasing K")
             logger.warning("  - Adjusting learning rate")
             logger.warning("  - Trying a different model")
-            # Continue anyway for data collection
         else:
             logger.info(f"Stage 1 PASSED: convergence {stage1_results['combined_convergence_rate']:.1%}")
 
     # Stage 2: Joint Q-A optimization
-    stage2_results, stage2_stats = run_stage2(
-        model, tokenized_pairs, Q_mode, A_mode, config, device, baselines
-    )
+    stage2_results = None
+    stage2_stats = None
+    if 2 in stages:
+        stage2_results, stage2_stats = run_stage2(
+            model, tokenized_pairs, Q_mode, A_mode, config, device, baselines
+        )
 
-    # Stage 3: Spot check
-    spot_checks = run_stage3(
-        model, tokenizer, stage2_results, pairs, Q_mode, A_mode, device
-    )
+    # Stage 3: Spot check (requires stage 2 results)
+    spot_checks = []
+    if 3 in stages:
+        if stage2_results is None:
+            logger.warning("Stage 3 requires Stage 2 results. Running Stage 2 first...")
+            stage2_results, stage2_stats = run_stage2(
+                model, tokenized_pairs, Q_mode, A_mode, config, device, baselines
+            )
+        spot_checks = run_stage3(
+            model, tokenizer, stage2_results, pairs, Q_mode, A_mode, device
+        )
 
     # Summary
     logger.info("=" * 60)
@@ -633,16 +675,22 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Model: {args.model}")
     logger.info(f"Examples: {args.num_examples}, K: {args.K}")
-    logger.info(f"Stage 2 convergence: {stage2_stats['convergence_rate']:.1%}")
-    logger.info(f"Mean loss ratio vs random: {stage2_stats['mean_loss_ratio_vs_random']:.2f}x")
+    logger.info(f"Stages run: {sorted(stages)}")
 
-    # Assess success
-    if stage2_stats["convergence_rate"] >= 0.5:
-        logger.info("RESULT: Core validation PASSED (>50% convergence)")
-    elif stage2_stats["convergence_rate"] >= 0.3:
-        logger.info("RESULT: Marginal (30-50% convergence) - investigate hyperparameters")
-    else:
-        logger.info("RESULT: Core validation FAILED (<30% convergence)")
+    if stage1_results:
+        logger.info(f"Stage 1 convergence: {stage1_results['combined_convergence_rate']:.1%}")
+
+    if stage2_stats:
+        logger.info(f"Stage 2 convergence: {stage2_stats['convergence_rate']:.1%}")
+        logger.info(f"Mean loss ratio vs random: {stage2_stats['mean_loss_ratio_vs_random']:.2f}x")
+
+        # Assess success
+        if stage2_stats["convergence_rate"] >= 0.5:
+            logger.info("RESULT: Core validation PASSED (>50% convergence)")
+        elif stage2_stats["convergence_rate"] >= 0.3:
+            logger.info("RESULT: Marginal (30-50% convergence) - investigate hyperparameters")
+        else:
+            logger.info("RESULT: Core validation FAILED (<30% convergence)")
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -659,6 +707,7 @@ def main():
             "lr": args.lr,
             "d": d,
             "loss_threshold": config.loss_threshold,
+            "stages_run": sorted(stages),
         },
         "baselines": baselines,
         "stage1": stage1_results,
@@ -672,8 +721,8 @@ def main():
                 "num_restarts_tried": r.num_restarts_tried,
             }
             for r in stage2_results
-        ],
-        "spot_checks": spot_checks,
+        ] if stage2_results else None,
+        "spot_checks": spot_checks if spot_checks else None,
         "timestamp": timestamp,
     }
 
@@ -682,23 +731,24 @@ def main():
     logger.info(f"Results saved to: {results_file}")
 
     # Also save the optimized embeddings for successful cases
-    converged_embeddings = [
-        (i, r.content.cpu())
-        for i, r in enumerate(stage2_results)
-        if r.converged
-    ]
-    if converged_embeddings:
-        embeddings_file = output_dir / f"phase1a_embeddings_{timestamp}.pt"
-        torch.save(
-            {
-                "embeddings": {i: emb for i, emb in converged_embeddings},
-                "Q_mode": Q_mode.cpu(),
-                "A_mode": A_mode.cpu(),
-                "config": asdict(config),
-            },
-            embeddings_file,
-        )
-        logger.info(f"Embeddings saved to: {embeddings_file}")
+    if stage2_results:
+        converged_embeddings = [
+            (i, r.content.cpu())
+            for i, r in enumerate(stage2_results)
+            if r.converged
+        ]
+        if converged_embeddings:
+            embeddings_file = output_dir / f"phase1a_embeddings_{timestamp}.pt"
+            torch.save(
+                {
+                    "embeddings": {i: emb for i, emb in converged_embeddings},
+                    "Q_mode": Q_mode.cpu(),
+                    "A_mode": A_mode.cpu(),
+                    "config": asdict(config),
+                },
+                embeddings_file,
+            )
+            logger.info(f"Embeddings saved to: {embeddings_file}")
 
 
 if __name__ == "__main__":
