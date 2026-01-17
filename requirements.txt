@@ -7,6 +7,10 @@ transformers>=4.40
 datasets>=2.14
 tqdm>=4.65
 
+# Analysis and visualization
+pandas>=2.0
+matplotlib>=3.7
+
 # Optional: for flash attention (recommended for faster inference)
 # flash-attn>=2.0
 
