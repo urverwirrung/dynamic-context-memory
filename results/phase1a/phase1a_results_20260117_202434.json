@@ -1,0 +1,303 @@
+{
+  "config": {
+    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "num_examples": 3,
+    "K": 32,
+    "num_restarts": 1,
+    "num_steps": 800,
+    "lr": 0.001,
+    "d": 3584,
+    "loss_threshold": 0.1,
+    "repetition_penalty": 1.0,
+    "no_repeat_ngram_size": 0,
+    "use_scheduled_sampling": false,
+    "ss_initial_epsilon": 1.0,
+    "ss_final_epsilon": 0.2,
+    "ss_decay_type": "inverse_sigmoid",
+    "ss_nudge_min_epsilon": 0.1,
+    "ss_nudge_up_on_degenerate": true,
+    "ss_nudge_up_factor": 1.5,
+    "ss_nudge_up_max_epsilon": 0.8,
+    "use_semantic_loss": true,
+    "semantic_loss_weight": 1.0,
+    "semantic_loss_temperature": 1.0,
+    "semantic_sentence_weight": 0.5,
+    "use_unlikelihood": true,
+    "unlikelihood_alpha": 0.5,
+    "stages_run": [
+      1
+    ]
+  },
+  "baselines": {
+    "random_q_mean": 11.044258117675781,
+    "random_a_mean": 13.292457262674967,
+    "random_combined_mean": 12.168357690175375
+  },
+  "stage1": {
+    "summary": {
+      "q_convergence_rate": 0.6666666666666666,
+      "q_mean_loss": 0.023713111877441406,
+      "a_convergence_rate": 1.0,
+      "a_mean_loss": 0.0010255177815755208,
+      "combined_convergence_rate": 0.8333333333333333
+    },
+    "per_example_q": [
+      {
+        "index": 0,
+        "target_text": "Greater London is divided into what two groups of boroughs?",
+        "generated_text": "Greater London is divided into what two groups of boroughs? Wait, no, that",
+        "target_tokens": [
+          41366,
+          7148,
+          374,
+          17779,
+          1119,
+          1128,
+          1378,
+          5203,
+          315,
+          65741,
+          82,
+          30
+        ],
+        "generated_tokens": [
+          41366,
+          7148,
+          374,
+          17779,
+          1119,
+          1128,
+          1378,
+          5203,
+          315,
+          65741,
+          82,
+          30,
+          13824,
+          11,
+          902,
+          11,
+          429
+        ],
+        "loss": 0.0002846717834472656,
+        "converged": true,
+        "steps_to_converge": 788,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Where is the Opera House located?",
+        "generated_text": "Where is the622222222",
+        "target_tokens": [
+          9064,
+          374,
+          279,
+          38579,
+          4678,
+          7407,
+          30
+        ],
+        "generated_tokens": [
+          9064,
+          374,
+          279,
+          21,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "loss": 0.07025146484375,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated_text": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "target_tokens": [
+          3838,
+          1521,
+          279,
+          10304,
+          22751,
+          29614,
+          438,
+          279,
+          501,
+          5297,
+          369,
+          8030,
+          15653,
+          323,
+          472,
+          74818,
+          30
+        ],
+        "generated_tokens": [
+          3838,
+          1521,
+          279,
+          10304,
+          22751,
+          29614,
+          438,
+          279,
+          501,
+          5297,
+          369,
+          8030,
+          15653,
+          323,
+          472,
+          74818,
+          30,
+          151643
+        ],
+        "loss": 0.0006031990051269531,
+        "converged": true,
+        "steps_to_converge": 250,
+        "num_restarts_tried": 1
+      }
+    ],
+    "per_example_a": [
+      {
+        "index": 0,
+        "target_text": "Inner London and Outer London",
+        "generated_text": "Inner London and Outer London Inner London and Outer London",
+        "target_tokens": [
+          31597,
+          7148,
+          323,
+          55197,
+          7148
+        ],
+        "generated_tokens": [
+          31597,
+          7148,
+          323,
+          55197,
+          7148,
+          36356,
+          7148,
+          323,
+          55197,
+          7148
+        ],
+        "loss": 0.0023441314697265625,
+        "converged": true,
+        "steps_to_converge": 500,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Place Broglie",
+        "generated_text": "Place BrogliePlace BrogliePlace",
+        "target_tokens": [
+          17371,
+          5906,
+          6072,
+          645
+        ],
+        "generated_tokens": [
+          17371,
+          5906,
+          6072,
+          645,
+          17371,
+          5906,
+          6072,
+          645,
+          17371
+        ],
+        "loss": 0.000244140625,
+        "converged": true,
+        "steps_to_converge": 250,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "ATSC",
+        "generated_text": "ATSCATSCATSCAT",
+        "target_tokens": [
+          828,
+          3540
+        ],
+        "generated_tokens": [
+          828,
+          3540,
+          828,
+          3540,
+          828,
+          3540,
+          828
+        ],
+        "loss": 0.00048828125,
+        "converged": true,
+        "steps_to_converge": 250,
+        "num_restarts_tried": 1
+      }
+    ],
+    "reconstructions_q": [
+      {
+        "index": 0,
+        "target": "Greater London is divided into what two groups of boroughs?",
+        "generated": "Greater London is divided into what two groups of boroughs? Wait, no, that",
+        "loss": 0.0002846717834472656,
+        "converged": true,
+        "steps_to_converge": 788
+      },
+      {
+        "index": 1,
+        "target": "Where is the Opera House located?",
+        "generated": "Where is the622222222",
+        "loss": 0.07025146484375,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 2,
+        "target": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "loss": 0.0006031990051269531,
+        "converged": true,
+        "steps_to_converge": 250
+      }
+    ],
+    "reconstructions_a": [
+      {
+        "index": 0,
+        "target": "Inner London and Outer London",
+        "generated": "Inner London and Outer London Inner London and Outer London",
+        "loss": 0.0023441314697265625,
+        "converged": true,
+        "steps_to_converge": 500
+      },
+      {
+        "index": 1,
+        "target": "Place Broglie",
+        "generated": "Place BrogliePlace BrogliePlace",
+        "loss": 0.000244140625,
+        "converged": true,
+        "steps_to_converge": 250
+      },
+      {
+        "index": 2,
+        "target": "ATSC",
+        "generated": "ATSCATSCATSCAT",
+        "loss": 0.00048828125,
+        "converged": true,
+        "steps_to_converge": 250
+      }
+    ]
+  },
+  "stage2": null,
+  "stage2_per_example": null,
+  "spot_checks": null,
+  "timestamp": "20260117_202434"
+}

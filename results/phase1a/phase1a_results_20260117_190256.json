@@ -1,0 +1,299 @@
+{
+  "config": {
+    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "num_examples": 3,
+    "K": 8,
+    "num_restarts": 1,
+    "num_steps": 2500,
+    "lr": 0.001,
+    "d": 3584,
+    "loss_threshold": 0.1,
+    "repetition_penalty": 1.2,
+    "no_repeat_ngram_size": 0,
+    "use_scheduled_sampling": true,
+    "ss_initial_epsilon": 1.0,
+    "ss_final_epsilon": 0.2,
+    "ss_decay_type": "inverse_sigmoid",
+    "use_unlikelihood": true,
+    "unlikelihood_alpha": 0.5,
+    "stages_run": [
+      1
+    ]
+  },
+  "baselines": {
+    "random_q_mean": 11.584503491719564,
+    "random_a_mean": 13.334097544352213,
+    "random_combined_mean": 12.459300518035889
+  },
+  "stage1": {
+    "summary": {
+      "q_convergence_rate": 0.0,
+      "q_mean_loss": 0.01943430851800561,
+      "a_convergence_rate": 0.0,
+      "a_mean_loss": 0.07216484317920428,
+      "combined_convergence_rate": 0.0
+    },
+    "per_example_q": [
+      {
+        "index": 0,
+        "target_text": "Greater London is divided into what two groups of boroughs?",
+        "generated_text": " London divided borough of the is dividing into two parts borough of what? Let's break",
+        "target_tokens": [
+          41366,
+          7148,
+          374,
+          17779,
+          1119,
+          1128,
+          1378,
+          5203,
+          315,
+          65741,
+          82,
+          30
+        ],
+        "generated_tokens": [
+          7148,
+          17779,
+          65741,
+          315,
+          279,
+          374,
+          49702,
+          1119,
+          1378,
+          5479,
+          65741,
+          315,
+          1128,
+          30,
+          6771,
+          594,
+          1438
+        ],
+        "loss": 7.617126539116725e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Where is the Opera House located?",
+        "generated_text": " is the Opera House located? I think not. Maybe it",
+        "target_tokens": [
+          9064,
+          374,
+          279,
+          38579,
+          4678,
+          7407,
+          30
+        ],
+        "generated_tokens": [
+          374,
+          279,
+          38579,
+          4678,
+          7407,
+          30,
+          358,
+          1744,
+          537,
+          13,
+          10696,
+          432
+        ],
+        "loss": 3.923601980204694e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated_text": " did you mean to refer to the Alliance in a way that maybe we can talk about an Assemblage and",
+        "target_tokens": [
+          3838,
+          1521,
+          279,
+          10304,
+          22751,
+          29614,
+          438,
+          279,
+          501,
+          5297,
+          369,
+          8030,
+          15653,
+          323,
+          472,
+          74818,
+          30
+        ],
+        "generated_tokens": [
+          1521,
+          498,
+          3076,
+          311,
+          8300,
+          311,
+          279,
+          22751,
+          304,
+          264,
+          1616,
+          429,
+          7196,
+          582,
+          646,
+          3061,
+          911,
+          458,
+          1634,
+          27013,
+          424,
+          323
+        ],
+        "loss": 0.058187518268823624,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      }
+    ],
+    "per_example_a": [
+      {
+        "index": 0,
+        "target_text": "Inner London and Outer London",
+        "generated_text": " London and Outer have always been closely intertwined, with",
+        "target_tokens": [
+          31597,
+          7148,
+          323,
+          55197,
+          7148
+        ],
+        "generated_tokens": [
+          7148,
+          323,
+          55197,
+          614,
+          2677,
+          1012,
+          15148,
+          98792,
+          11,
+          448
+        ],
+        "loss": 0.216452956199646,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Place Broglie",
+        "generated_text": " Broglie's equation: \\(\\(A",
+        "target_tokens": [
+          17371,
+          5906,
+          6072,
+          645
+        ],
+        "generated_tokens": [
+          5906,
+          6072,
+          645,
+          594,
+          23606,
+          25,
+          17767,
+          44292,
+          32
+        ],
+        "loss": 3.793746145674959e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "ATSC",
+        "generated_text": "SC\n\n<think>\n\n</think>\n\n",
+        "target_tokens": [
+          828,
+          3540
+        ],
+        "generated_tokens": [
+          3540,
+          198,
+          198,
+          151648,
+          271,
+          151649,
+          271
+        ],
+        "loss": 3.635876510088565e-06,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      }
+    ],
+    "reconstructions_q": [
+      {
+        "index": 0,
+        "target": "Greater London is divided into what two groups of boroughs?",
+        "generated": " London divided borough of the is dividing into two parts borough of what? Let's break",
+        "loss": 7.617126539116725e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 1,
+        "target": "Where is the Opera House located?",
+        "generated": " is the Opera House located? I think not. Maybe it",
+        "loss": 3.923601980204694e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 2,
+        "target": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated": " did you mean to refer to the Alliance in a way that maybe we can talk about an Assemblage and",
+        "loss": 0.058187518268823624,
+        "converged": false,
+        "steps_to_converge": 0
+      }
+    ],
+    "reconstructions_a": [
+      {
+        "index": 0,
+        "target": "Inner London and Outer London",
+        "generated": " London and Outer have always been closely intertwined, with",
+        "loss": 0.216452956199646,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 1,
+        "target": "Place Broglie",
+        "generated": " Broglie's equation: \\(\\(A",
+        "loss": 3.793746145674959e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 2,
+        "target": "ATSC",
+        "generated": "SC\n\n<think>\n\n</think>\n\n",
+        "loss": 3.635876510088565e-06,
+        "converged": false,
+        "steps_to_converge": 0
+      }
+    ]
+  },
+  "stage2": null,
+  "stage2_per_example": null,
+  "spot_checks": null,
+  "timestamp": "20260117_190256"
+}

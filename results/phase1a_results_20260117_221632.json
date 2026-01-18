@@ -1,0 +1,82 @@
+{
+  "config": {
+    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "num_examples": 3,
+    "K": 32,
+    "num_restarts": 1,
+    "num_steps": 5000,
+    "lr": 0.001,
+    "use_warm_restarts": true,
+    "warm_restart_t0": 800,
+    "warm_restart_t_mult": 2,
+    "d": 3584,
+    "add_eos": true,
+    "loss_threshold": 0.1,
+    "repetition_penalty": 1.0,
+    "no_repeat_ngram_size": 0,
+    "use_scheduled_sampling": false,
+    "ss_initial_epsilon": 1.0,
+    "ss_final_epsilon": 0.2,
+    "ss_decay_type": "inverse_sigmoid",
+    "ss_nudge_min_epsilon": 0.1,
+    "ss_nudge_up_on_degenerate": true,
+    "ss_nudge_up_factor": 1.5,
+    "ss_nudge_up_max_epsilon": 0.8,
+    "use_semantic_loss": true,
+    "semantic_loss_weight": 1.0,
+    "semantic_loss_temperature": 1.0,
+    "semantic_sentence_weight": 0.5,
+    "eos_penalty_weight": 1.0,
+    "use_unlikelihood": false,
+    "unlikelihood_alpha": 0.5,
+    "use_eos_convergence": true,
+    "eos_prob_threshold": 0.5,
+    "stages_run": [
+      2
+    ]
+  },
+  "baselines": {
+    "random_q_mean": 26.703125,
+    "random_a_mean": 28.03125,
+    "random_combined_mean": 27.3671875,
+    "loss_type": "semantic"
+  },
+  "stage1": null,
+  "stage2": {
+    "total": 3,
+    "converged": 3,
+    "convergence_rate": 1.0,
+    "mean_loss": 0.002190272013346354,
+    "mean_loss_q": 0.0007136662801106771,
+    "mean_loss_a": 0.001476605733235677,
+    "min_loss": 0.0018711090087890625,
+    "max_loss": 0.00272369384765625,
+    "mean_loss_ratio_vs_random": 8.003277696498239e-05,
+    "mean_restarts": 1.0
+  },
+  "stage2_per_example": [
+    {
+      "loss": 0.0018711090087890625,
+      "loss_q": 0.0005941390991210938,
+      "loss_a": 0.0012769699096679688,
+      "converged": true,
+      "num_restarts_tried": 1
+    },
+    {
+      "loss": 0.00197601318359375,
+      "loss_q": 0.0008296966552734375,
+      "loss_a": 0.0011463165283203125,
+      "converged": true,
+      "num_restarts_tried": 1
+    },
+    {
+      "loss": 0.00272369384765625,
+      "loss_q": 0.0007171630859375,
+      "loss_a": 0.00200653076171875,
+      "converged": true,
+      "num_restarts_tried": 1
+    }
+  ],
+  "spot_checks": null,
+  "timestamp": "20260117_221632"
+}

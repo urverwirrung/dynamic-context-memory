@@ -1,0 +1,307 @@
+{
+  "config": {
+    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "num_examples": 3,
+    "K": 32,
+    "num_restarts": 1,
+    "num_steps": 800,
+    "lr": 0.001,
+    "d": 3584,
+    "loss_threshold": 0.1,
+    "repetition_penalty": 1.0,
+    "no_repeat_ngram_size": 0,
+    "use_scheduled_sampling": false,
+    "ss_initial_epsilon": 1.0,
+    "ss_final_epsilon": 0.2,
+    "ss_decay_type": "inverse_sigmoid",
+    "ss_nudge_min_epsilon": 0.1,
+    "ss_nudge_up_on_degenerate": true,
+    "ss_nudge_up_factor": 1.5,
+    "ss_nudge_up_max_epsilon": 0.8,
+    "use_semantic_loss": false,
+    "semantic_loss_weight": 1.0,
+    "semantic_loss_temperature": 1.0,
+    "semantic_sentence_weight": 0.5,
+    "use_unlikelihood": false,
+    "unlikelihood_alpha": 0.5,
+    "stages_run": [
+      1
+    ]
+  },
+  "baselines": {
+    "random_q_mean": 11.044258117675781,
+    "random_a_mean": 13.292457262674967,
+    "random_combined_mean": 12.168357690175375
+  },
+  "stage1": {
+    "summary": {
+      "q_convergence_rate": 0.0,
+      "q_mean_loss": 0.00011000929104435879,
+      "a_convergence_rate": 0.0,
+      "a_mean_loss": 1.6889733008914238e-05,
+      "combined_convergence_rate": 0.0
+    },
+    "per_example_q": [
+      {
+        "index": 0,
+        "target_text": "Greater London is divided into what two groups of boroughs?",
+        "generated_text": " London divided what is into two parts User and two parts two parts two parts two parts",
+        "target_tokens": [
+          41366,
+          7148,
+          374,
+          17779,
+          1119,
+          1128,
+          1378,
+          5203,
+          315,
+          65741,
+          82,
+          30
+        ],
+        "generated_tokens": [
+          7148,
+          17779,
+          1128,
+          374,
+          1119,
+          1378,
+          5479,
+          2657,
+          323,
+          1378,
+          5479,
+          1378,
+          5479,
+          1378,
+          5479,
+          1378,
+          5479
+        ],
+        "loss": 6.015885082888417e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Where is the Opera House located?",
+        "generated_text": " is the most popular game in the  is the most popular",
+        "target_tokens": [
+          9064,
+          374,
+          279,
+          38579,
+          4678,
+          7407,
+          30
+        ],
+        "generated_tokens": [
+          374,
+          279,
+          1429,
+          5411,
+          1809,
+          304,
+          279,
+          220,
+          374,
+          279,
+          1429,
+          5411
+        ],
+        "loss": 5.42727648280561e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated_text": " did the Alliance News, and read about the Alliance's paper about the two approaches. the question is: are",
+        "target_tokens": [
+          3838,
+          1521,
+          279,
+          10304,
+          22751,
+          29614,
+          438,
+          279,
+          501,
+          5297,
+          369,
+          8030,
+          15653,
+          323,
+          472,
+          74818,
+          30
+        ],
+        "generated_tokens": [
+          1521,
+          279,
+          22751,
+          5398,
+          11,
+          323,
+          1349,
+          911,
+          279,
+          22751,
+          594,
+          5567,
+          911,
+          279,
+          1378,
+          19827,
+          13,
+          279,
+          3405,
+          374,
+          25,
+          525
+        ],
+        "loss": 0.0002155962574761361,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      }
+    ],
+    "per_example_a": [
+      {
+        "index": 0,
+        "target_text": "Inner London and Outer London",
+        "generated_text": " London London London London London London London London London London",
+        "target_tokens": [
+          31597,
+          7148,
+          323,
+          55197,
+          7148
+        ],
+        "generated_tokens": [
+          7148,
+          7148,
+          7148,
+          7148,
+          7148,
+          7148,
+          7148,
+          7148,
+          7148,
+          7148
+        ],
+        "loss": 2.4652021238580346e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 1,
+        "target_text": "Place Broglie",
+        "generated_text": " Broglie Broglie Broglie",
+        "target_tokens": [
+          17371,
+          5906,
+          6072,
+          645
+        ],
+        "generated_tokens": [
+          5906,
+          6072,
+          645,
+          5906,
+          6072,
+          645,
+          5906,
+          6072,
+          645
+        ],
+        "loss": 2.160644726245664e-05,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      },
+      {
+        "index": 2,
+        "target_text": "ATSC",
+        "generated_text": "SCSCATATSCATAT",
+        "target_tokens": [
+          828,
+          3540
+        ],
+        "generated_tokens": [
+          3540,
+          3540,
+          828,
+          828,
+          3540,
+          828,
+          828
+        ],
+        "loss": 4.4107305257057305e-06,
+        "converged": false,
+        "steps_to_converge": 0,
+        "num_restarts_tried": 1
+      }
+    ],
+    "reconstructions_q": [
+      {
+        "index": 0,
+        "target": "Greater London is divided into what two groups of boroughs?",
+        "generated": " London divided what is into two parts User and two parts two parts two parts two parts",
+        "loss": 6.015885082888417e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 1,
+        "target": "Where is the Opera House located?",
+        "generated": " is the most popular game in the  is the most popular",
+        "loss": 5.42727648280561e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 2,
+        "target": "What did the Grand Alliance propose as the new standard for SDTV and HDTV?",
+        "generated": " did the Alliance News, and read about the Alliance's paper about the two approaches. the question is: are",
+        "loss": 0.0002155962574761361,
+        "converged": false,
+        "steps_to_converge": 0
+      }
+    ],
+    "reconstructions_a": [
+      {
+        "index": 0,
+        "target": "Inner London and Outer London",
+        "generated": " London London London London London London London London London London",
+        "loss": 2.4652021238580346e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 1,
+        "target": "Place Broglie",
+        "generated": " Broglie Broglie Broglie",
+        "loss": 2.160644726245664e-05,
+        "converged": false,
+        "steps_to_converge": 0
+      },
+      {
+        "index": 2,
+        "target": "ATSC",
+        "generated": "SCSCATATSCATAT",
+        "loss": 4.4107305257057305e-06,
+        "converged": false,
+        "steps_to_converge": 0
+      }
+    ]
+  },
+  "stage2": null,
+  "stage2_per_example": null,
+  "spot_checks": null,
+  "timestamp": "20260117_200420"
+}
