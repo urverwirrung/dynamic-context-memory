@@ -12,7 +12,7 @@ import math
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Callable
+from typing import Optional, Tuple, List, Callable, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,10 @@ class OptimizationConfig:
     lr: float = 0.001               # Initial learning rate (reduced from 0.01 to avoid NaN)
     init_scale: float = 0.02        # Scale for random initialization
     use_scheduler: bool = True      # Use cosine annealing LR schedule
+    scheduler_t_max: int = 800      # Fixed T_max for cosine annealing (decoupled from num_steps)
+    use_warm_restarts: bool = False # Use CosineAnnealingWarmRestarts instead of CosineAnnealingLR
+    warm_restart_t0: int = 400      # Initial restart period (T_0)
+    warm_restart_t_mult: int = 2    # Multiplier for restart period (T_mult): 400, 800, 1600...
     use_reduce_on_plateau: bool = False  # Additionally reduce LR when loss plateaus (disabled: conflicts with scheduled sampling)
     plateau_patience: int = 100     # Steps without improvement before reducing LR
     plateau_factor: float = 0.5     # Factor to reduce LR by
@@ -39,6 +43,9 @@ class OptimizationConfig:
     recon_check_window: int = 50          # Window size for computing loss delta
     recon_check_delta_threshold: float = 0.001  # Delta below this = plateau, check frequently (lower = slower convergence to min)
     reconstruction_prefix_len: int = 0    # 0 = require full match; >0 = require first N tokens
+    # EOS-based convergence: check P(EOS) at stopping position instead of exact match
+    use_eos_convergence: bool = True      # Use P(EOS) threshold for convergence (softer than exact match)
+    eos_prob_threshold: float = 0.5       # P(EOS) must be above this to consider converged
     # Inference-time anti-repetition (for reconstruction checking)
     repetition_penalty: float = 1.0       # >1.0 discourages repetition. Typical: 1.1-1.3
     no_repeat_ngram_size: int = 0         # If >0, prevent any n-gram from appearing twice
@@ -50,8 +57,20 @@ class OptimizationConfig:
     ss_decay_k: float = 5.0               # Parameter for inverse sigmoid (higher = slower decay, 5-10 recommended)
     ss_plateau_nudge: bool = True         # Nudge epsilon down when loss plateaus (escape local minima)
     ss_nudge_patience: int = 75           # Steps without improvement before nudging epsilon
-    ss_nudge_factor: float = 0.7          # Multiply epsilon by this factor when nudging
-    ss_nudge_min_epsilon: float = 0.1     # Don't nudge below this epsilon
+    ss_nudge_factor: float = 0.75         # Multiply epsilon by this factor when nudging DOWN
+    ss_nudge_min_epsilon: float = 0.1     # Floor to maintain some teacher forcing (was 0.0, caused collapse)
+    ss_nudge_lr_boost: float = 2.0        # Multiply LR by this factor when epsilon is nudged (helps adapt to new regime)
+    # Bidirectional epsilon adjustment (escape degenerate local minima)
+    ss_nudge_up_on_degenerate: bool = True  # Increase epsilon if reconstruction degenerates
+    ss_nudge_up_factor: float = 1.5       # Multiply epsilon by this when degenerating (nudge up)
+    ss_nudge_up_max_epsilon: float = 0.8  # Max epsilon when nudging up (don't go back to pure TF)
+    ss_degenerate_repeat_threshold: int = 3  # Consecutive same-token count to detect degeneration
+    # Semantic loss: reward semantic similarity instead of exact token match
+    use_semantic_loss: bool = False         # Use embedding similarity loss instead of/alongside CE
+    semantic_loss_weight: float = 1.0       # Weight for semantic loss vs CE (0 = pure CE, 1 = pure semantic)
+    semantic_loss_temperature: float = 1.0  # Softmax temperature for semantic loss (lower = sharper)
+    semantic_sentence_weight: float = 0.5   # Weight for sentence-level vs token-level (0 = token only, 1 = sentence only)
+    eos_penalty_weight: float = 1.0         # Weight for extra token penalty (penalize non-EOS after target)
     # Unlikelihood loss (Priority 2): penalize repetition during training
     use_unlikelihood: bool = False        # Enable unlikelihood training
     unlikelihood_alpha: float = 0.5       # Weight for unlikelihood loss (0.5-1.0 recommended)
@@ -67,6 +86,7 @@ class OptimizationResult:
     converged: bool                 # Whether loss < threshold
     num_restarts_tried: int         # How many restarts were attempted
     loss_history: List[float]       # Loss curve from best run
+    steps_to_converge: int = 0      # Step at which convergence was achieved (0 = never)
 
 
 class ContentOptimizer:
@@ -88,6 +108,8 @@ class ContentOptimizer:
         A_mode: torch.Tensor,
         config: OptimizationConfig,
         device: torch.device = None,
+        eos_token_id: Optional[int] = None,
+        tokenizer: Optional[Any] = None,
     ):
         """
         Args:
@@ -97,6 +119,8 @@ class ContentOptimizer:
             A_mode: Fixed mode embedding for answer generation, shape (1, d)
             config: Optimization hyperparameters
             device: Torch device
+            eos_token_id: EOS token ID for convergence checking
+            tokenizer: Optional tokenizer for decoding during logging
         """
         self.generator = generator
         self.generator_loss_fn = generator_loss_fn
@@ -104,6 +128,8 @@ class ContentOptimizer:
         self.A_mode = A_mode
         self.config = config
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.eos_token_id = eos_token_id
+        self.tokenizer = tokenizer
 
         # Ensure generator is frozen
         self.generator.eval()
@@ -131,6 +157,8 @@ class ContentOptimizer:
         """
         Compute combined loss for Q and A reconstruction.
 
+        Supports semantic loss when config.use_semantic_loss is True.
+
         Returns:
             total_loss, loss_q, loss_a
         """
@@ -138,35 +166,202 @@ class ContentOptimizer:
         prompt_q = torch.cat([self.Q_mode, content], dim=0)  # (1+K, d)
         prompt_a = torch.cat([self.A_mode, content], dim=0)  # (1+K, d)
 
-        # Compute reconstruction losses
-        loss_q = self.generator_loss_fn(self.generator, Q_tokens, prompt_q)
-        loss_a = self.generator_loss_fn(self.generator, A_tokens, prompt_a)
+        if self.config.use_semantic_loss:
+            # Semantic similarity loss (partial credit for similar tokens)
+            sem_loss_q, _, _ = hf_semantic_loss_fn(
+                self.generator,
+                Q_tokens,
+                prompt_q,
+                temperature=self.config.semantic_loss_temperature,
+                sentence_weight=self.config.semantic_sentence_weight,
+                eos_token_id=self.eos_token_id,
+                eos_penalty_weight=self.config.eos_penalty_weight,
+            )
+            sem_loss_a, _, _ = hf_semantic_loss_fn(
+                self.generator,
+                A_tokens,
+                prompt_a,
+                temperature=self.config.semantic_loss_temperature,
+                sentence_weight=self.config.semantic_sentence_weight,
+                eos_token_id=self.eos_token_id,
+                eos_penalty_weight=self.config.eos_penalty_weight,
+            )
+
+            # Blend with CE loss based on weight
+            # weight=1.0 means pure semantic, weight=0.0 means pure CE
+            w = self.config.semantic_loss_weight
+            if w < 1.0:
+                ce_loss_q = self.generator_loss_fn(self.generator, Q_tokens, prompt_q)
+                ce_loss_a = self.generator_loss_fn(self.generator, A_tokens, prompt_a)
+                loss_q = w * sem_loss_q + (1 - w) * ce_loss_q
+                loss_a = w * sem_loss_a + (1 - w) * ce_loss_a
+            else:
+                loss_q = sem_loss_q
+                loss_a = sem_loss_a
+        else:
+            # Standard cross-entropy loss
+            loss_q = self.generator_loss_fn(self.generator, Q_tokens, prompt_q)
+            loss_a = self.generator_loss_fn(self.generator, A_tokens, prompt_a)
 
         return loss_q + loss_a, loss_q, loss_a
+
+    def _compute_check_interval(self, loss_history: List[float]) -> int:
+        """
+        Compute adaptive check interval based on loss delta.
+
+        When loss is dropping fast (large delta), check rarely.
+        When loss plateaus (small delta), check frequently.
+        """
+        window = self.config.recon_check_window
+        min_interval = self.config.recon_check_min_interval
+        max_interval = self.config.recon_check_max_interval
+        delta_threshold = self.config.recon_check_delta_threshold
+
+        if len(loss_history) < window:
+            return max_interval  # Not enough history, check rarely
+
+        # Compute delta over window
+        recent = loss_history[-window:]
+        delta = recent[0] - recent[-1]  # Positive if loss is decreasing
+
+        if delta <= 0:
+            # Loss increasing or flat - check frequently
+            return min_interval
+
+        if delta < delta_threshold:
+            # Loss plateauing - check frequently
+            return min_interval
+
+        # Scale interval based on delta: larger delta -> larger interval
+        ratio = delta / (delta + delta_threshold)
+        interval = int(min_interval + (max_interval - min_interval) * ratio)
+        return min(max_interval, max(min_interval, interval))
+
+    def _check_convergence(
+        self,
+        content: torch.Tensor,
+        Q_tokens: torch.Tensor,
+        A_tokens: torch.Tensor,
+        Q_list: List[int],
+        A_list: List[int],
+    ) -> Tuple[bool, bool, List[int], List[int]]:
+        """
+        Check if both Q and A reconstruct correctly.
+
+        Returns:
+            (q_converged, a_converged, q_generated, a_generated)
+        """
+        prefix_len = self.config.reconstruction_prefix_len
+        q_len = len(Q_list)
+        a_len = len(A_list)
+
+        # Decode Q with Q_mode prefix
+        prompt_q = torch.cat([self.Q_mode, content.detach()], dim=0)
+        q_generated = greedy_decode_tokens(
+            self.generator,
+            prompt_q,
+            max_new_tokens=q_len + 5,
+            eos_token_id=self.eos_token_id,
+            repetition_penalty=self.config.repetition_penalty,
+            no_repeat_ngram_size=self.config.no_repeat_ngram_size,
+        )
+
+        # Decode A with A_mode prefix
+        prompt_a = torch.cat([self.A_mode, content.detach()], dim=0)
+        a_generated = greedy_decode_tokens(
+            self.generator,
+            prompt_a,
+            max_new_tokens=a_len + 5,
+            eos_token_id=self.eos_token_id,
+            repetition_penalty=self.config.repetition_penalty,
+            no_repeat_ngram_size=self.config.no_repeat_ngram_size,
+        )
+
+        # Check exact match for Q
+        q_exact = check_reconstruction(q_generated, Q_list, prefix_len)
+        q_converged = q_exact
+
+        # Check EOS convergence for Q if exact match failed
+        if not q_exact and self.config.use_eos_convergence and self.eos_token_id is not None:
+            q_content = [t for t in Q_list if t != self.eos_token_id]
+            q_content_len = len(q_content)
+            q_content_matches = (
+                len(q_generated) >= q_content_len and
+                q_generated[:q_content_len] == q_content
+            )
+            if q_content_matches:
+                q_eos_prob = get_eos_probability(
+                    self.generator, Q_tokens, prompt_q, self.eos_token_id
+                )
+                q_converged = q_eos_prob >= self.config.eos_prob_threshold
+
+        # Check exact match for A
+        a_exact = check_reconstruction(a_generated, A_list, prefix_len)
+        a_converged = a_exact
+
+        # Check EOS convergence for A if exact match failed
+        if not a_exact and self.config.use_eos_convergence and self.eos_token_id is not None:
+            a_content = [t for t in A_list if t != self.eos_token_id]
+            a_content_len = len(a_content)
+            a_content_matches = (
+                len(a_generated) >= a_content_len and
+                a_generated[:a_content_len] == a_content
+            )
+            if a_content_matches:
+                a_eos_prob = get_eos_probability(
+                    self.generator, A_tokens, prompt_a, self.eos_token_id
+                )
+                a_converged = a_eos_prob >= self.config.eos_prob_threshold
+
+        return q_converged, a_converged, q_generated, a_generated
 
     def _single_run(
         self,
         Q_tokens: torch.Tensor,
         A_tokens: torch.Tensor,
-    ) -> Tuple[torch.Tensor, float, List[float]]:
+        Q_list: List[int],
+        A_list: List[int],
+        pbar: Optional["tqdm.tqdm"] = None,
+        example_idx: int = 0,
+        num_examples: int = 1,
+        restart_idx: int = 0,
+    ) -> Tuple[torch.Tensor, float, float, float, List[float], int, bool, List[int], List[int]]:
         """
         Single optimization run from random initialization.
 
         Returns:
-            best_content, best_loss, loss_history
+            (best_content, best_loss, best_loss_q, best_loss_a, loss_history,
+             steps_to_converge, converged, q_generated, a_generated)
+
+        converged = True means BOTH Q and A reconstruct correctly
         """
         content = self._initialize_content()
         optimizer = torch.optim.Adam([content], lr=self.config.lr)
 
         scheduler = None
         if self.config.use_scheduler:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.config.num_steps
-            )
+            if self.config.use_warm_restarts:
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=self.config.warm_restart_t0,
+                    T_mult=self.config.warm_restart_t_mult,
+                )
+            else:
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=self.config.scheduler_t_max
+                )
 
         loss_history = []
         best_content = content.detach().clone()
         best_loss = float('inf')
+        best_loss_q = float('inf')
+        best_loss_a = float('inf')
+        converged = False
+        steps_to_converge = 0
+        last_q_generated = []
+        last_a_generated = []
+        steps_since_last_check = 0
+        current_lr = self.config.lr
 
         for step in range(self.config.num_steps):
             optimizer.zero_grad()
@@ -182,62 +377,153 @@ class ContentOptimizer:
 
             if scheduler is not None:
                 scheduler.step()
+                current_lr = optimizer.param_groups[0]['lr']
 
             loss_val = loss.item()
+            loss_q_val = loss_q.item()
+            loss_a_val = loss_a.item()
+
+            # Detect NaN/Inf and abort this run early
+            if math.isnan(loss_val) or math.isinf(loss_val):
+                if pbar is not None:
+                    pbar.update(self.config.num_steps - step - 1)
+                return (best_content, best_loss, best_loss_q, best_loss_a, loss_history,
+                        steps_to_converge, converged, last_q_generated, last_a_generated)
+
             loss_history.append(loss_val)
+            steps_since_last_check += 1
 
             if loss_val < best_loss:
                 best_loss = loss_val
+                best_loss_q = loss_q_val
+                best_loss_a = loss_a_val
                 best_content = content.detach().clone()
 
-        return best_content, best_loss, loss_history
+            # Adaptive reconstruction checking
+            check_interval = self._compute_check_interval(loss_history)
+            should_check = (
+                steps_since_last_check >= check_interval or
+                step == self.config.num_steps - 1
+            )
+
+            if should_check:
+                steps_since_last_check = 0
+                q_conv, a_conv, q_gen, a_gen = self._check_convergence(
+                    content, Q_tokens, A_tokens, Q_list, A_list
+                )
+                last_q_generated = q_gen
+                last_a_generated = a_gen
+
+                # Both must converge for joint optimization to succeed
+                if q_conv and a_conv:
+                    converged = True
+                    steps_to_converge = step + 1
+                    best_content = content.detach().clone()
+                    best_loss = loss_val
+                    best_loss_q = loss_q_val
+                    best_loss_a = loss_a_val
+
+                    if pbar is not None:
+                        pbar.set_postfix(loss=f"{loss_val:.6f}", status="✓ BOTH")
+                        pbar.update(self.config.num_steps - step - 1)
+                    break
+
+            if pbar is not None:
+                pbar.set_description(
+                    f"ex {example_idx+1}/{num_examples} | restart {restart_idx+1}/{self.config.num_restarts}"
+                )
+                pbar.set_postfix(loss=f"{loss_val:.6f}", lr=f"{current_lr:.1e}")
+                pbar.update(1)
+
+        # Final reconstruction check if we didn't converge during training
+        if not converged:
+            q_conv, a_conv, last_q_generated, last_a_generated = self._check_convergence(
+                best_content, Q_tokens, A_tokens, Q_list, A_list
+            )
+            if q_conv and a_conv:
+                converged = True
+                steps_to_converge = self.config.num_steps
+
+        return (best_content, best_loss, best_loss_q, best_loss_a, loss_history,
+                steps_to_converge, converged, last_q_generated, last_a_generated)
 
     def optimize(
         self,
         Q_tokens: torch.Tensor,
         A_tokens: torch.Tensor,
+        pbar: Optional["tqdm.tqdm"] = None,
+        example_idx: int = 0,
+        num_examples: int = 1,
     ) -> OptimizationResult:
         """
         Find optimal content embeddings for a (Q, A) pair.
 
         Uses multiple restarts and returns the best result.
+        Convergence = BOTH Q and A reconstruct correctly.
 
         Args:
             Q_tokens: Tokenized question, shape (seq_len_q,)
             A_tokens: Tokenized answer, shape (seq_len_a,)
+            pbar: Optional tqdm progress bar for step-level updates
+            example_idx: Current example index (for progress display)
+            num_examples: Total number of examples (for progress display)
 
         Returns:
             OptimizationResult with best content embeddings and metadata
         """
+        # Convert to lists for reconstruction checking
+        Q_list = Q_tokens.tolist()
+        A_list = A_tokens.tolist()
+
         best_content = None
         best_loss = float('inf')
+        best_loss_q = float('inf')
+        best_loss_a = float('inf')
         best_history = []
+        best_converged = False
+        best_steps_to_converge = 0
+        restarts_tried = 0
 
         for restart in range(self.config.num_restarts):
-            content, loss, history = self._single_run(Q_tokens, A_tokens)
+            restarts_tried = restart + 1
+            (content, loss, loss_q, loss_a, history, steps_to_converge,
+             converged, q_gen, a_gen) = self._single_run(
+                Q_tokens, A_tokens, Q_list, A_list,
+                pbar=pbar, example_idx=example_idx, num_examples=num_examples,
+                restart_idx=restart,
+            )
 
+            # If this run converged (both Q and A reconstruct), we're done
+            if converged:
+                return OptimizationResult(
+                    content=content,
+                    loss=loss,
+                    loss_q=loss_q,
+                    loss_a=loss_a,
+                    converged=True,
+                    num_restarts_tried=restarts_tried,
+                    loss_history=history,
+                    steps_to_converge=steps_to_converge,
+                )
+
+            # Otherwise track best loss (even though it didn't converge)
             if loss < best_loss:
                 best_loss = loss
+                best_loss_q = loss_q
+                best_loss_a = loss_a
                 best_content = content
                 best_history = history
 
-                # Early exit if we've found a good solution
-                if loss < self.config.loss_threshold * 0.5:
-                    logger.debug(f"Early exit at restart {restart + 1}")
-                    break
-
-        # Compute final component losses for diagnostics
-        with torch.no_grad():
-            _, loss_q, loss_a = self._compute_loss(best_content, Q_tokens, A_tokens)
-
+        # No restart achieved convergence - return best attempt
         return OptimizationResult(
             content=best_content,
             loss=best_loss,
-            loss_q=loss_q.item(),
-            loss_a=loss_a.item(),
-            converged=best_loss < self.config.loss_threshold,
-            num_restarts_tried=restart + 1,
+            loss_q=best_loss_q,
+            loss_a=best_loss_a,
+            converged=False,
+            num_restarts_tried=restarts_tried,
             loss_history=best_history,
+            steps_to_converge=0,
         )
 
 
@@ -362,6 +648,99 @@ def check_reconstruction(
         return generated[:len(target)] == target
 
 
+def get_eos_probability(
+    model: nn.Module,
+    target_tokens: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    eos_token_id: int,
+) -> float:
+    """
+    Get the probability the model assigns to EOS at the position after target content.
+
+    If target = [tok1, tok2, ..., tokN, EOS], we check P(EOS | tok1...tokN).
+    This measures how well the embedding teaches the model to stop.
+
+    Args:
+        model: HuggingFace model
+        target_tokens: Target sequence INCLUDING EOS at the end
+        prompt_embeds: Soft prompt embeddings
+        eos_token_id: The EOS token ID
+
+    Returns:
+        Probability of EOS at the stopping position (0.0 to 1.0)
+    """
+    device = prompt_embeds.device
+    model_dtype = next(model.parameters()).dtype
+    embed_layer = model.get_input_embeddings()
+
+    prompt_embeds_cast = prompt_embeds.to(dtype=model_dtype)
+
+    # Get embeddings for target tokens (excluding the final EOS - we want to predict it)
+    # If target is [A, B, C, EOS], we feed [prompt, A, B, C] and check P(EOS) at position C
+    target_without_eos = target_tokens[:-1] if target_tokens[-1].item() == eos_token_id else target_tokens
+    target_embeds = embed_layer(target_without_eos)
+
+    # Forward pass
+    full_embeds = torch.cat([prompt_embeds_cast, target_embeds], dim=0).unsqueeze(0)
+
+    with torch.no_grad():
+        outputs = model(inputs_embeds=full_embeds)
+        # Logits at last position predict what comes next (should be EOS)
+        last_logits = outputs.logits[0, -1, :]  # (vocab_size,)
+        probs = torch.softmax(last_logits, dim=-1)
+        eos_prob = probs[eos_token_id].item()
+
+    return eos_prob
+
+
+def detect_degenerate_output(
+    generated: List[int],
+    repeat_threshold: int = 3,
+) -> bool:
+    """
+    Detect if output has degenerated into repetitive garbage.
+
+    Signs of degeneration:
+    - Same token repeated many times in a row
+    - Very short repeating patterns (e.g., "AB AB AB")
+
+    Args:
+        generated: Generated token IDs
+        repeat_threshold: Number of consecutive same tokens to trigger
+
+    Returns:
+        True if output appears degenerate
+    """
+    if len(generated) < repeat_threshold:
+        return False
+
+    # Check for consecutive same tokens
+    consecutive = 1
+    for i in range(1, len(generated)):
+        if generated[i] == generated[i - 1]:
+            consecutive += 1
+            if consecutive >= repeat_threshold:
+                return True
+        else:
+            consecutive = 1
+
+    # Check for short repeating patterns (bigrams, trigrams)
+    # e.g., [A, B, A, B, A, B] or [A, B, C, A, B, C]
+    for pattern_len in [2, 3]:
+        if len(generated) >= pattern_len * 3:  # Need at least 3 repetitions
+            pattern = tuple(generated[:pattern_len])
+            repeats = 0
+            for i in range(0, len(generated) - pattern_len + 1, pattern_len):
+                if tuple(generated[i:i + pattern_len]) == pattern:
+                    repeats += 1
+                else:
+                    break
+            if repeats >= 3:
+                return True
+
+    return False
+
+
 class SingleTargetOptimizer:
     """
     Diagnostic: optimize content for a single target sequence.
@@ -384,12 +763,14 @@ class SingleTargetOptimizer:
         config: OptimizationConfig,
         device: torch.device = None,
         eos_token_id: Optional[int] = None,
+        tokenizer: Optional[Any] = None,
     ):
         self.generator = generator
         self.generator_loss_fn = generator_loss_fn
         self.config = config
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.eos_token_id = eos_token_id
+        self.tokenizer = tokenizer  # Optional, for decoding during nudge checks
 
         self.generator.eval()
         for param in self.generator.parameters():
@@ -462,9 +843,16 @@ class SingleTargetOptimizer:
 
         scheduler = None
         if self.config.use_scheduler:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.config.num_steps
-            )
+            if self.config.use_warm_restarts:
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=self.config.warm_restart_t0,
+                    T_mult=self.config.warm_restart_t_mult,
+                )
+            else:
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=self.config.scheduler_t_max
+                )
 
         loss_history = []
         best_content = content.detach().clone()
@@ -487,6 +875,7 @@ class SingleTargetOptimizer:
             self.config.use_scheduled_sampling or
             self.config.use_unlikelihood
         )
+        use_semantic = self.config.use_semantic_loss
 
         # Plateau-triggered epsilon nudge tracking
         epsilon_multiplier = 1.0  # Accumulated nudges (gets multiplied down)
@@ -496,7 +885,27 @@ class SingleTargetOptimizer:
         for step in range(self.config.num_steps):
             optimizer.zero_grad()
 
-            if use_advanced_loss:
+            if use_semantic:
+                # Semantic similarity loss (partial credit for similar tokens)
+                sem_loss, token_loss, sentence_loss = hf_semantic_loss_fn(
+                    self.generator,
+                    target_tokens,
+                    content,
+                    temperature=self.config.semantic_loss_temperature,
+                    sentence_weight=self.config.semantic_sentence_weight,
+                    eos_token_id=self.eos_token_id,
+                    eos_penalty_weight=self.config.eos_penalty_weight,
+                )
+                # Blend with CE loss based on weight
+                # weight=1.0 means pure semantic, weight=0.0 means pure CE
+                w = self.config.semantic_loss_weight
+                if w < 1.0:
+                    ce_loss = self.generator_loss_fn(self.generator, target_tokens, content)
+                    loss = w * sem_loss + (1 - w) * ce_loss
+                else:
+                    loss = sem_loss
+                epsilon = 1.0  # No scheduled sampling with semantic loss for now
+            elif use_advanced_loss:
                 # Compute epsilon for scheduled sampling
                 base_epsilon = compute_epsilon(step, self.config.num_steps, self.config)
 
@@ -532,6 +941,7 @@ class SingleTargetOptimizer:
 
             if scheduler is not None:
                 scheduler.step()
+                current_lr = optimizer.param_groups[0]['lr']
 
             loss_val = loss.item()
 
@@ -565,8 +975,9 @@ class SingleTargetOptimizer:
                         steps_since_improvement = 0
                         plateau_best_loss = loss_val  # Reset baseline
 
-            # Plateau-triggered epsilon nudge (escape local minima by injecting variance)
-            if use_advanced_loss and self.config.ss_plateau_nudge:
+            # Plateau-triggered epsilon nudge (bidirectional: can nudge down OR up)
+            # Only applies to scheduled sampling, not semantic loss
+            if use_advanced_loss and not use_semantic and self.config.ss_plateau_nudge:
                 if loss_val < nudge_best_loss - 1e-6:  # Meaningful improvement
                     nudge_best_loss = loss_val
                     nudge_steps_since_improvement = 0
@@ -574,16 +985,69 @@ class SingleTargetOptimizer:
                     nudge_steps_since_improvement += 1
 
                 if nudge_steps_since_improvement >= self.config.ss_nudge_patience:
-                    # Nudge epsilon down to inject variance
-                    old_multiplier = epsilon_multiplier
-                    epsilon_multiplier = max(
-                        self.config.ss_nudge_min_epsilon / max(base_epsilon, 0.01),
-                        epsilon_multiplier * self.config.ss_nudge_factor
+                    # Check current reconstruction quality before deciding nudge direction
+                    nudge_generated = greedy_decode_tokens(
+                        self.generator,
+                        content.detach(),
+                        max_new_tokens=target_len + 5,
+                        eos_token_id=self.eos_token_id,
+                        repetition_penalty=self.config.repetition_penalty,
+                        no_repeat_ngram_size=self.config.no_repeat_ngram_size,
                     )
-                    if epsilon_multiplier < old_multiplier:
+                    nudge_converged = check_reconstruction(nudge_generated, target_list, prefix_len)
+                    is_degenerate = detect_degenerate_output(
+                        nudge_generated,
+                        repeat_threshold=self.config.ss_degenerate_repeat_threshold,
+                    )
+
+                    old_multiplier = epsilon_multiplier
+                    old_lr = current_lr
+                    nudge_direction = None
+
+                    if is_degenerate and self.config.ss_nudge_up_on_degenerate:
+                        # Output is degenerate - nudge epsilon UP to get more teacher forcing
+                        max_mult = self.config.ss_nudge_up_max_epsilon / max(base_epsilon, 0.01)
+                        epsilon_multiplier = min(max_mult, epsilon_multiplier * self.config.ss_nudge_up_factor)
+                        nudge_direction = "UP"
+                    else:
+                        # Not degenerate - nudge epsilon DOWN to inject more variance
+                        min_mult = self.config.ss_nudge_min_epsilon / max(base_epsilon, 0.01)
+                        epsilon_multiplier = max(min_mult, epsilon_multiplier * self.config.ss_nudge_factor)
+                        nudge_direction = "DOWN"
+
+                    # Only act if multiplier actually changed
+                    if epsilon_multiplier != old_multiplier:
+                        # Boost LR to help adapt to new epsilon regime
+                        new_lr = min(current_lr * self.config.ss_nudge_lr_boost, self.config.lr)
+                        if new_lr > current_lr:
+                            current_lr = new_lr
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] = current_lr
+
+                        status = "✓" if nudge_converged else ("⚠ DEGEN" if is_degenerate else "✗")
+                        direction_symbol = "↑" if nudge_direction == "UP" else "↓"
+
                         if pbar is not None:
                             from tqdm import tqdm
-                            tqdm.write(f"    ⚡ Epsilon nudge: {base_epsilon:.2f}×{old_multiplier:.2f}→{epsilon_multiplier:.2f} (plateau detected)")
+                            tqdm.write(f"    {direction_symbol} Epsilon {nudge_direction} @ loss={loss_val:.6f}: ε {base_epsilon:.5f}×{old_multiplier:.5f}→{epsilon_multiplier:.5f}, LR: {old_lr:.1e}→{current_lr:.1e}")
+                            # Show reconstruction comparison
+                            if self.tokenizer is not None:
+                                target_text = self.tokenizer.decode(target_list, skip_special_tokens=True)
+                                generated_text = self.tokenizer.decode(nudge_generated, skip_special_tokens=True)
+                                tqdm.write(f"    {status} Target:    {target_text}")
+                                tqdm.write(f"    {status} Generated: {generated_text}")
+                            else:
+                                tqdm.write(f"    {status} Target tokens:    {target_list}")
+                                tqdm.write(f"    {status} Generated tokens: {nudge_generated}")
+
+                        # Update convergence if we hit it
+                        if nudge_converged and not converged:
+                            converged = True
+                            steps_to_converge = step + 1
+                            best_content = content.detach().clone()
+                            best_loss = loss_val
+                        last_generated = nudge_generated
+
                     nudge_steps_since_improvement = 0
                     nudge_best_loss = loss_val  # Reset baseline
 
@@ -606,14 +1070,45 @@ class SingleTargetOptimizer:
                 )
                 last_generated = generated
 
-                if check_reconstruction(generated, target_list, prefix_len):
+                # Check convergence: exact match OR (content match + high P(EOS))
+                exact_match = check_reconstruction(generated, target_list, prefix_len)
+                eos_converged = False
+                eos_prob = None
+
+                if not exact_match and self.config.use_eos_convergence and self.eos_token_id is not None:
+                    # EOS convergence: content must be correct, just didn't stop cleanly
+                    # Check if generated tokens match target content (excluding EOS)
+                    target_content = [t for t in target_list if t != self.eos_token_id]
+                    content_len = len(target_content)
+
+                    # Generated must have at least the content tokens and they must match
+                    content_matches = (
+                        len(generated) >= content_len and
+                        generated[:content_len] == target_content
+                    )
+
+                    if content_matches:
+                        # Content is correct - check if P(EOS) at stopping position is high
+                        eos_prob = get_eos_probability(
+                            self.generator,
+                            target_tokens,
+                            content.detach(),
+                            self.eos_token_id,
+                        )
+                        eos_converged = eos_prob >= self.config.eos_prob_threshold
+
+                if exact_match or eos_converged:
                     converged = True
                     steps_to_converge = step + 1
                     best_content = content.detach().clone()
                     best_loss = loss_val
 
                     if pbar is not None:
-                        pbar.set_postfix(loss=f"{loss_val:.8f}", status="✓ CONVERGED")
+                        if exact_match:
+                            status = "✓ EXACT"
+                        else:
+                            status = f"✓ EOS p={eos_prob:.2f}"
+                        pbar.set_postfix(loss=f"{loss_val:.8f}", status=status)
                         pbar.update(self.config.num_steps - step - 1)
                     break
 
@@ -623,7 +1118,7 @@ class SingleTargetOptimizer:
                 )
                 postfix = {"loss": f"{loss_val:.6f}", "lr": f"{current_lr:.1e}"}
                 if use_advanced_loss:
-                    postfix["ε"] = f"{epsilon:.2f}"
+                    postfix["ε"] = f"{epsilon:.5f}"
                 pbar.set_postfix(**postfix)
                 pbar.update(1)
 
@@ -1066,6 +1561,124 @@ def hf_scheduled_sampling_loss_fn(
     return total_loss, ce_loss, ul_loss
 
 
+def hf_semantic_loss_fn(
+    model: nn.Module,
+    target_tokens: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    temperature: float = 1.0,
+    sentence_weight: float = 0.5,
+    eos_token_id: Optional[int] = None,
+    eos_penalty_weight: float = 0.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute semantic similarity loss at both token and sentence level.
+
+    Token-level: At each position, compare expected predicted embedding to target embedding.
+    Sentence-level: Compare mean hidden states of predicted vs target sequence.
+
+    This allows semantically equivalent outputs (e.g., "London" vs "Greater London")
+    to have low loss.
+
+    Args:
+        model: HuggingFace AutoModelForCausalLM
+        target_tokens: Target sequence, shape (seq_len,) - should include EOS at end
+        prompt_embeds: Soft prompt embeddings, shape (prompt_len, d)
+        temperature: Softmax temperature (lower = sharper distribution)
+        sentence_weight: Weight for sentence-level loss (0 = token only, 1 = sentence only)
+        eos_token_id: EOS token ID for extra token penalty
+        eos_penalty_weight: Weight for penalizing non-EOS after target (0 = disabled)
+
+    Returns:
+        (total_loss, token_loss, sentence_loss)
+    """
+    device = prompt_embeds.device
+    embed_layer = model.get_input_embeddings()
+    model_dtype = next(model.parameters()).dtype
+
+    prompt_embeds_cast = prompt_embeds.to(dtype=model_dtype)
+    seq_len = target_tokens.shape[0]
+    prompt_len = prompt_embeds.shape[0]
+
+    # Get target embeddings
+    target_embeds = embed_layer(target_tokens.to(device))  # (seq_len, d)
+
+    # Get full embedding matrix for computing expected embeddings
+    embed_matrix = embed_layer.weight  # (vocab_size, d)
+
+    # Forward pass with teacher forcing - get hidden states too
+    full_embeds = torch.cat([prompt_embeds_cast, target_embeds], dim=0).unsqueeze(0)
+    outputs = model(inputs_embeds=full_embeds, output_hidden_states=True)
+
+    # === Token-level loss ===
+    # Get logits for each target position
+    logits = outputs.logits[0, prompt_len-1:prompt_len-1+seq_len, :]  # (seq_len, vocab)
+
+    # Compute softmax probabilities
+    probs = torch.softmax(logits / temperature, dim=-1)  # (seq_len, vocab)
+
+    # Compute expected embedding at each position: E[emb] = probs @ embed_matrix
+    expected_embeds = probs @ embed_matrix  # (seq_len, d)
+
+    # Normalize for cosine similarity
+    expected_norm = expected_embeds / (expected_embeds.norm(dim=-1, keepdim=True) + 1e-8)
+    target_input_norm = target_embeds / (target_embeds.norm(dim=-1, keepdim=True) + 1e-8)
+
+    # Token-level cosine similarity
+    token_cos_sim = (expected_norm * target_input_norm).sum(dim=-1)  # (seq_len,)
+    token_loss = (1 - token_cos_sim).mean()
+
+    # === Sentence-level loss ===
+    # Get hidden states from the last layer
+    hidden_states = outputs.hidden_states[-1]  # (1, prompt_len + seq_len, d)
+
+    # Mean pool the hidden states for the generated positions
+    # The positions where we predict target tokens
+    pred_hidden = hidden_states[0, prompt_len-1:prompt_len-1+seq_len, :]  # (seq_len, d)
+    pred_sentence = pred_hidden.mean(dim=0)  # (d,)
+
+    # For target, we need to get hidden states from running target through the model
+    # Use the hidden states at target positions (shifted by 1 from prediction positions)
+    target_hidden = hidden_states[0, prompt_len:prompt_len+seq_len, :]  # (seq_len, d)
+    target_sentence = target_hidden.mean(dim=0)  # (d,)
+
+    # Sentence-level cosine similarity
+    pred_sent_norm = pred_sentence / (pred_sentence.norm() + 1e-8)
+    target_sent_norm = target_sentence / (target_sentence.norm() + 1e-8)
+    sentence_cos_sim = (pred_sent_norm * target_sent_norm).sum()
+    sentence_loss = 1 - sentence_cos_sim
+
+    # Combined loss
+    total_loss = (1 - sentence_weight) * token_loss + sentence_weight * sentence_loss
+
+    # === EOS position penalty ===
+    # Bidirectional: penalize both early EOS (during content) and late EOS (after content)
+    if eos_penalty_weight > 0 and eos_token_id is not None:
+        # Late EOS penalty: penalize non-EOS at position after target
+        # Position (prompt_len + seq_len - 1) predicts what comes after last target token
+        after_target_logits = outputs.logits[0, prompt_len + seq_len - 1, :]  # (vocab,)
+        eos_target = torch.tensor([eos_token_id], device=device)
+        late_eos_loss = nn.functional.cross_entropy(
+            after_target_logits.unsqueeze(0),
+            eos_target
+        )
+
+        # Early EOS penalty: penalize P(EOS) at content positions (before the final EOS)
+        # Content positions are prompt_len-1 to prompt_len+seq_len-2 (predicting tokens 0 to seq_len-2)
+        # We want P(EOS) to be LOW at these positions
+        if seq_len > 1:  # Only if there's content before EOS
+            content_logits = outputs.logits[0, prompt_len-1:prompt_len+seq_len-2, :]  # (seq_len-1, vocab)
+            content_probs = torch.softmax(content_logits, dim=-1)
+            early_eos_probs = content_probs[:, eos_token_id]  # P(EOS) at each content position
+            # Penalize: -log(1 - P(EOS)) pushes P(EOS) toward 0
+            early_eos_loss = -torch.log(1 - early_eos_probs + 1e-10).mean()
+        else:
+            early_eos_loss = torch.tensor(0.0, device=device)
+
+        total_loss = total_loss + eos_penalty_weight * (late_eos_loss + early_eos_loss)
+
+    return total_loss, token_loss, sentence_loss
+
+
 def hf_scheduled_sampling_loss_fn_fast(
     model: nn.Module,
     target_tokens: torch.Tensor,
@@ -1120,8 +1733,6 @@ def hf_scheduled_sampling_loss_fn_fast(
         pred_embeds = embed_layer(pred_tokens)  # (seq_len, d)
 
     # Mix embeddings: ε * GT + (1-ε) * predicted
-    # This is applied to the context, not the token being predicted
-    # For position t, the context up to t uses mixed embeddings
     mixed_embeds = epsilon * target_embeds + (1 - epsilon) * pred_embeds
 
     # Second pass: with mixed embeddings
