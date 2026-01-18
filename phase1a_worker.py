@@ -46,11 +46,6 @@ def run_worker(config: Dict) -> List[Dict]:
     for param in model.parameters():
         param.requires_grad = False
 
-    # Enable gradient checkpointing to reduce memory usage during backward pass
-    if hasattr(model, 'gradient_checkpointing_enable'):
-        model.gradient_checkpointing_enable()
-        print(f"[Worker {worker_id} / GPU {gpu_id}] Gradient checkpointing enabled", file=sys.stderr)
-
     # Create mode embeddings
     q_token_id = tokenizer.encode("Q", add_special_tokens=False)[0]
     a_token_id = tokenizer.encode("A", add_special_tokens=False)[0]

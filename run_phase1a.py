@@ -165,6 +165,12 @@ def parse_args() -> argparse.Namespace:
         help="Path to code on remote machines (default: ~/repos/dynamic-context-memory)",
     )
     parser.add_argument(
+        "--remote-venv",
+        type=str,
+        default="~/.venv/dcm",
+        help="Path to virtualenv on remote machines (default: ~/.venv/dcm)",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default="results",
@@ -957,6 +963,7 @@ def _run_worker_subprocess(
     config_dict: Dict,
     add_eos: bool,
     remote_dir: str,
+    remote_venv: str = None,
 ) -> List[Dict]:
     """
     Run a worker via subprocess (local) or SSH (remote).
@@ -982,9 +989,14 @@ def _run_worker_subprocess(
         cmd = ["python3", "phase1a_worker.py"]
         logger.info(f"  Starting local worker {worker_id} on GPU {gpu_id}...")
     else:
-        # Remote via SSH
-        cmd = ["ssh", host, f"cd {remote_dir} && python3 phase1a_worker.py"]
+        # Remote via SSH - activate venv if specified
+        if remote_venv:
+            ssh_cmd = f"source {remote_venv}/bin/activate && cd {remote_dir} && python3 phase1a_worker.py"
+        else:
+            ssh_cmd = f"cd {remote_dir} && python3 phase1a_worker.py"
+        cmd = ["ssh", host, ssh_cmd]
         logger.info(f"  Starting remote worker {worker_id} on {host}:GPU{gpu_id}...")
+        logger.debug(f"  SSH command: {' '.join(cmd)}")
 
     proc = subprocess.Popen(
         cmd,
@@ -994,12 +1006,30 @@ def _run_worker_subprocess(
         text=True,
     )
 
-    stdout, stderr = proc.communicate(input=input_json)
+    # Send input and close stdin
+    proc.stdin.write(input_json)
+    proc.stdin.close()
 
-    # Print stderr (progress output) to our stderr
-    if stderr:
-        for line in stderr.strip().split('\n'):
-            print(f"[W{worker_id}] {line}", file=sys.stderr)
+    # Stream stderr in real-time while collecting stdout
+    import threading
+    import io
+
+    stderr_lines = []
+    def stream_stderr():
+        for line in proc.stderr:
+            line = line.rstrip()
+            stderr_lines.append(line)
+            print(f"[W{worker_id}] {line}", file=sys.stderr, flush=True)
+
+    stderr_thread = threading.Thread(target=stream_stderr)
+    stderr_thread.start()
+
+    # Collect stdout
+    stdout = proc.stdout.read()
+    proc.wait()
+    stderr_thread.join()
+
+    stderr = '\n'.join(stderr_lines)
 
     if proc.returncode != 0:
         logger.error(f"Worker {worker_id} failed with return code {proc.returncode}")
@@ -1024,6 +1054,7 @@ def run_stage2_distributed(
     add_eos: bool,
     baselines: Dict[str, float],
     remote_dir: str,
+    remote_venv: str = None,
 ) -> Tuple[List[Dict], Dict]:
     """
     Run Stage 2 distributed across multiple machines/GPUs.
@@ -1093,7 +1124,7 @@ def run_stage2_distributed(
                 _run_worker_subprocess,
                 w["host"], w["gpu_id"], w["worker_id"],
                 model_name, w["pairs"], w["indices"],
-                config_dict, add_eos, remote_dir,
+                config_dict, add_eos, remote_dir, remote_venv,
             )
             futures.append(future)
 
@@ -1509,7 +1540,7 @@ def main():
             if args.distributed:
                 stage2_results, stage2_stats = run_stage2_distributed(
                     args.distributed, args.model, pairs, config_dict,
-                    args.add_eos, baselines, args.remote_dir,
+                    args.add_eos, baselines, args.remote_dir, args.remote_venv,
                 )
             else:
                 stage2_results, stage2_stats = run_stage2_parallel(

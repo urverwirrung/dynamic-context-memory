@@ -6,6 +6,7 @@ torch>=2.0
 transformers>=4.40
 datasets>=2.14
 tqdm>=4.65
+accelerate>=1.12
 
 # Analysis and visualization
 pandas>=2.0
@@ -16,4 +17,3 @@ matplotlib>=3.7
 
 # Optional: for quantized models
 # bitsandbytes>=0.41
-# accelerate>=0.21
