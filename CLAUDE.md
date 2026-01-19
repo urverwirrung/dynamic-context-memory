@@ -29,7 +29,8 @@ Validating whether we can optimize STM content such that a single content repres
 |------|---------|
 | `run_phase1a.py` | Main orchestrator - CLI args, model loading, stage execution |
 | `phase1a_optimization.py` | Core optimization loop - ContentOptimizer, loss computation |
-| `phase1a_worker.py` | Distributed worker - JSON protocol for multi-GPU/machine |
+| `phase1a_task.py` | Task adapter for experiment-runner library integration |
+| `phase1a_worker.py` | Legacy distributed worker - JSON protocol (deprecated) |
 | `analyze_results.py` | Results analysis and visualization |
 | `docs/architecture.md` | Full v0.6 design document |
 | `docs/phase1a-experiment.md` | Experimental design and staging |
@@ -44,9 +45,29 @@ python run_phase1a.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
 # All stages
 python run_phase1a.py --all
 
-# Distributed across GPUs (device:weight format)
+# Distributed (legacy mode - JSON protocol, no artifact persistence)
 python run_phase1a.py --distributed "localhost:0:100,localhost:1:70" --num-examples 200
+
+# Distributed (experiment-runner - proper artifacts, retry handling)
+python run_phase1a.py --distributed "localhost:0:100,localhost:1:70" \
+                      --use-experiment-runner --shared-fs /shared/experiments
 ```
+
+## Distributed Execution Modes
+
+### Legacy Mode (default with --distributed)
+- Uses `phase1a_worker.py` via SSH/subprocess
+- JSON protocol over stdin/stdout
+- No artifact persistence (tensors lost)
+- Simple but limited
+
+### Experiment-Runner Mode (--use-experiment-runner)
+- Uses `experiment-runner` library from `~/repos/experiment-runner`
+- Pickle protocol with proper artifact management
+- Tensors saved to shared filesystem
+- Retry handling with exponential backoff
+- Dead letter queue for failed tasks
+- Requires: `pip install -e ~/repos/experiment-runner`
 
 ## Architecture (v1)
 
