@@ -26,6 +26,9 @@ import argparse
 import json
 import logging
 import os
+import platform
+import socket
+import subprocess
 import sys
 from dataclasses import asdict
 from datetime import datetime
@@ -38,6 +41,27 @@ import torch
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Optional experiment tracking
+try:
+    from experiment_tracker import get_tracker, generate_run_id
+    TRACKING_AVAILABLE = True
+except ImportError:
+    TRACKING_AVAILABLE = False
+
+# Optional experiment-runner library for distributed execution
+try:
+    from experiment_runner import (
+        DistributedExecutor,
+        FilesystemBackend,
+        RetryPolicy,
+        SerialExecutor,
+        WorkerSpec,
+    )
+    from phase1a_task import Phase1aTask, Phase1aInput, create_inputs_from_pairs
+    EXPERIMENT_RUNNER_AVAILABLE = True
+except ImportError:
+    EXPERIMENT_RUNNER_AVAILABLE = False
 
 from phase1a_optimization import (
     ContentOptimizer,
@@ -169,6 +193,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="~/.venv/dcm",
         help="Path to virtualenv on remote machines (default: ~/.venv/dcm)",
+    )
+    parser.add_argument(
+        "--shared-fs",
+        type=str,
+        default="/tmp/experiment-runner",
+        help="Path to shared filesystem for distributed execution (default: /tmp/experiment-runner). Required for experiment-runner mode.",
+    )
+    parser.add_argument(
+        "--use-experiment-runner",
+        action="store_true",
+        help="Use experiment-runner library for distributed execution (requires pip install -e ~/repos/experiment-runner)",
     )
     parser.add_argument(
         "--output-dir",
@@ -344,6 +379,38 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Unlikelihood loss weight (default: 0.5, range: 0.5-1.0)",
     )
+    # Experiment tracking (requires experiment-tracker package)
+    # Tracking is enabled by default if experiment-tracker is installed
+    parser.add_argument(
+        "--no-track",
+        action="store_true",
+        help="Disable experiment tracking",
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        default="dcm",
+        help="Project name for tracking (default: dcm)",
+    )
+    parser.add_argument(
+        "--experiment",
+        type=str,
+        default="phase1a",
+        help="Experiment name for tracking (default: phase1a)",
+    )
+    parser.add_argument(
+        "--tags",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Tags for experiment tracking",
+    )
+    parser.add_argument(
+        "--notes",
+        type=str,
+        default=None,
+        help="Notes for experiment tracking",
+    )
     return parser.parse_args()
 
 
@@ -361,6 +428,27 @@ def parse_stages(args: argparse.Namespace) -> set:
             raise ValueError(f"Invalid stage: {s}. Must be 1, 2, or 3.")
 
     return stages
+
+
+def get_git_commit() -> Optional[str]:
+    """Get current git commit hash, or None if not in a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:12]
+    except Exception:
+        pass
+    return None
+
+
+def get_hostname() -> str:
+    """Get current machine hostname."""
+    return socket.gethostname().split(".")[0].lower()
 
 
 # -----------------------------------------------------------------------------
@@ -1168,6 +1256,172 @@ def run_stage2_distributed(
     return results, stats
 
 
+def run_stage2_experiment_runner(
+    worker_specs: str,
+    model_name: str,
+    pairs: List[Tuple[str, str]],
+    config_dict: Dict,
+    add_eos: bool,
+    baselines: Dict[str, float],
+    shared_fs_path: str,
+    remote_dir: str,
+    remote_venv: str = None,
+) -> Tuple[List[Dict], Dict]:
+    """
+    Run Stage 2 using the experiment-runner library.
+
+    Uses the new distributed execution framework with proper artifact handling,
+    retry policies, and tmux-based workers.
+
+    Args:
+        worker_specs: "host:gpu:weight,..." format
+        model_name: HuggingFace model name
+        pairs: List of (Q, A) string pairs
+        config_dict: OptimizationConfig parameters
+        add_eos: Whether to append EOS to targets
+        baselines: Baseline loss values
+        shared_fs_path: Path to shared filesystem for artifacts
+        remote_dir: Working directory on remote machines
+        remote_venv: Path to virtualenv on remote machines
+
+    Returns:
+        (list of result dicts, summary statistics)
+    """
+    if not EXPERIMENT_RUNNER_AVAILABLE:
+        logger.error("experiment-runner library not installed!")
+        logger.error("Install with: pip install -e ~/repos/experiment-runner")
+        raise ImportError("experiment-runner library required for this mode")
+
+    logger.info("=" * 60)
+    logger.info("STAGE 2: Joint Q-A Optimization (EXPERIMENT-RUNNER)")
+    logger.info("=" * 60)
+    logger.info("Convergence criterion: both Q and A reconstruct exactly")
+
+    # Parse worker specs
+    workers = []
+    for spec in worker_specs.split(","):
+        parts = spec.strip().split(":")
+        if len(parts) == 2:
+            host, gpu = parts
+            weight = 100
+        elif len(parts) == 3:
+            host, gpu, weight = parts
+            weight = int(weight)
+        else:
+            raise ValueError(f"Invalid worker spec: {spec}")
+
+        workers.append(WorkerSpec(
+            host=host,
+            gpu_id=int(gpu),
+            weight=weight,
+            python_path=f"{remote_venv}/bin/python" if remote_venv else "python",
+            work_dir=remote_dir,
+        ))
+
+    logger.info(f"  Workers: {len(workers)}")
+    for w in workers:
+        logger.info(f"    - {w.host}:GPU{w.gpu_id} (weight={w.weight})")
+
+    # Set up storage backend
+    storage = FilesystemBackend(Path(shared_fs_path))
+    if not storage.verify_local_access():
+        raise RuntimeError(f"Cannot access shared filesystem: {shared_fs_path}")
+
+    # Create task
+    task = Phase1aTask(
+        model_name=model_name,
+        config_dict=config_dict,
+        add_eos=add_eos,
+        save_embeddings=True,
+    )
+
+    # Create inputs
+    inputs = create_inputs_from_pairs(pairs)
+
+    # Create executor with retry policy
+    retry_policy = RetryPolicy(
+        max_retries=3,
+        base_delay_seconds=5.0,
+        max_delay_seconds=60.0,
+    )
+
+    executor = DistributedExecutor(
+        workers=workers,
+        storage=storage,
+        retry_policy=retry_policy,
+        verify_workers=True,
+        poll_interval_seconds=2.0,
+    )
+
+    # Generate job ID
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    job_id = f"phase1a_{timestamp}"
+
+    # Execute
+    logger.info(f"  Starting job: {job_id}")
+    job_result = executor.execute(
+        task=task,
+        inputs=inputs,
+        job_id=job_id,
+        artifact_dir=storage.artifact_dir(job_id),
+    )
+
+    # Convert TaskResults to the expected dict format
+    results = []
+    for tr in job_result.results:
+        results.append({
+            "index": tr.metrics.get("original_index", tr.index),
+            "loss": tr.metrics.get("loss", 0.0),
+            "loss_q": tr.metrics.get("loss_q", 0.0),
+            "loss_a": tr.metrics.get("loss_a", 0.0),
+            "converged": tr.metrics.get("converged", False),
+            "num_restarts_tried": tr.metrics.get("num_restarts_tried", 0),
+            "steps_to_converge": tr.metrics.get("steps_to_converge", 0),
+            "content_path": str(tr.artifact_paths.get("content", "")) if tr.artifact_paths else "",
+        })
+
+    # Sort by original index
+    results.sort(key=lambda x: x["index"])
+
+    # Compute statistics
+    converged_count = sum(1 for r in results if r["converged"])
+    losses = [r["loss"] for r in results]
+    losses_q = [r["loss_q"] for r in results]
+    losses_a = [r["loss_a"] for r in results]
+
+    random_baseline = baselines["random_combined_mean"]
+    loss_ratios = [l / random_baseline for l in losses] if random_baseline > 0 else losses
+
+    stats = {
+        "total": len(results),
+        "converged": converged_count,
+        "convergence_rate": converged_count / len(results) if results else 0,
+        "mean_loss": sum(losses) / len(losses) if losses else 0,
+        "mean_loss_q": sum(losses_q) / len(losses_q) if losses_q else 0,
+        "mean_loss_a": sum(losses_a) / len(losses_a) if losses_a else 0,
+        "min_loss": min(losses) if losses else 0,
+        "max_loss": max(losses) if losses else 0,
+        "mean_loss_ratio_vs_random": sum(loss_ratios) / len(loss_ratios) if loss_ratios else 0,
+        "mean_restarts": sum(r["num_restarts_tried"] for r in results) / len(results) if results else 0,
+        "job_id": job_id,
+        "elapsed_seconds": job_result.elapsed_time_seconds,
+        "success_rate": job_result.success_rate,
+        "failed_tasks": job_result.failed_tasks,
+    }
+
+    logger.info(f"\nStage 2 Results (experiment-runner - {len(workers)} workers):")
+    logger.info(f"  Job ID: {job_id}")
+    logger.info(f"  Elapsed: {job_result.elapsed_time_seconds:.1f}s")
+    logger.info(f"  Convergence: {stats['convergence_rate']:.1%} ({converged_count}/{len(results)})")
+    logger.info(f"  Mean loss: {stats['mean_loss']:.4f} (Q: {stats['mean_loss_q']:.4f}, A: {stats['mean_loss_a']:.4f})")
+    logger.info(f"  Loss ratio vs random: {stats['mean_loss_ratio_vs_random']:.2f}x")
+    logger.info(f"  Mean restarts needed: {stats['mean_restarts']:.1f}")
+    if job_result.failed_tasks:
+        logger.warning(f"  Failed tasks: {len(job_result.failed_tasks)} indices")
+
+    return results, stats
+
+
 # -----------------------------------------------------------------------------
 # Stage 3: Spot Check with Greedy Decoding
 # -----------------------------------------------------------------------------
@@ -1297,6 +1551,28 @@ def main():
     stages = parse_stages(args)
 
     logger.info(f"Running stages: {sorted(stages)}")
+
+    # Experiment tracking setup (enabled by default if available)
+    tracker_db = None
+    run_id = None
+    git_commit = get_git_commit()
+    machine = get_hostname()
+
+    if not args.no_track and TRACKING_AVAILABLE:
+        tracker_db = get_tracker(warn_if_missing=True)
+        if tracker_db:
+            run_id = generate_run_id(args.project, args.experiment, machine)
+            tracker_db.register_run(
+                run_id,
+                project=args.project,
+                experiment=args.experiment,
+                machine=machine,
+                model_name=args.model,
+                git_commit=git_commit,
+                tags=args.tags,
+                notes=args.notes,
+            )
+            logger.info(f"Tracking run: {run_id}")
 
     # Set seed
     torch.manual_seed(args.seed)
@@ -1538,10 +1814,19 @@ def main():
                 "unlikelihood_alpha": config.unlikelihood_alpha,
             }
             if args.distributed:
-                stage2_results, stage2_stats = run_stage2_distributed(
-                    args.distributed, args.model, pairs, config_dict,
-                    args.add_eos, baselines, args.remote_dir, args.remote_venv,
-                )
+                if args.use_experiment_runner:
+                    # Use new experiment-runner library with proper artifact handling
+                    stage2_results, stage2_stats = run_stage2_experiment_runner(
+                        args.distributed, args.model, pairs, config_dict,
+                        args.add_eos, baselines, args.shared_fs,
+                        args.remote_dir, args.remote_venv,
+                    )
+                else:
+                    # Legacy distributed mode (JSON protocol, no artifacts)
+                    stage2_results, stage2_stats = run_stage2_distributed(
+                        args.distributed, args.model, pairs, config_dict,
+                        args.add_eos, baselines, args.remote_dir, args.remote_venv,
+                    )
             else:
                 stage2_results, stage2_stats = run_stage2_parallel(
                     args.model, pairs, config_dict, args.add_eos, baselines
@@ -1631,6 +1916,10 @@ def main():
             "use_eos_convergence": config.use_eos_convergence,
             "eos_prob_threshold": config.eos_prob_threshold,
             "stages_run": sorted(stages),
+            # Environment info for tracking
+            "machine": machine,
+            "git_commit": git_commit,
+            "python_version": platform.python_version(),
         },
         "baselines": baselines,
         "stage1": stage1_detailed if stage1_detailed else stage1_summary,
@@ -1676,6 +1965,24 @@ def main():
                 embeddings_file,
             )
             logger.info(f"Embeddings saved to: {embeddings_file}")
+
+    # Complete experiment tracking
+    if tracker_db and run_id:
+        try:
+            convergence_rate = stage2_stats.get("convergence_rate") if stage2_stats else None
+            mean_loss = stage2_stats.get("mean_loss") if stage2_stats else None
+            tracker_db.complete_run(
+                run_id,
+                results_path=results_file,
+                convergence_rate=convergence_rate,
+                mean_loss=mean_loss,
+                num_examples=args.num_examples,
+            )
+            logger.info(f"Tracking completed: {run_id}")
+        except Exception as e:
+            logger.warning(f"Failed to complete tracking: {e}")
+        finally:
+            tracker_db.close()
 
 
 if __name__ == "__main__":

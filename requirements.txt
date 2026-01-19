@@ -17,3 +17,12 @@ matplotlib>=3.7
 
 # Optional: for quantized models
 # bitsandbytes>=0.41
+
+# Optional: experiment tracking (enabled by default if installed)
+# pip install git+https://github.com/urverwirrung/experiment-tracker.git
+# Tracking uses /data/experiments/experiments.db by default
+# Override with EXPERIMENTS_DB or EXPERIMENTS_ROOT env vars
+
+# Optional: distributed execution with artifact management
+# pip install -e ~/repos/experiment-runner
+# Use with: python run_phase1a.py --distributed "..." --use-experiment-runner
